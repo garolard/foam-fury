@@ -220,7 +220,7 @@ void fragment() {
         if (_player == null) return;
         var w = _player.Weapon;
         _weaponName.Text = w.Name.ToUpper();
-        _weaponIcon.Texture = GD.Load<Texture2D>(GameData.Kit + $"Previews/{w.Model}.png");
+        _weaponIcon.Texture = ResourceLoader.Exists(w.IconPath) ? GD.Load<Texture2D>(w.IconPath) : null;
     }
 
     public void HitMarker(bool head, bool kill)

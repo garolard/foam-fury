@@ -17,6 +17,13 @@ public partial class Zombie : CharacterBody3D
     float _yaw;
     float _flinch, _headFlinch, _lean, _headTilt, _phase;
     bool _lastExplosive;
+    // status effects: mud slows, fire burns over time
+    float _slowT, _slowMul = 1f, _burnT, _burnDps, _burnTick;
+    CpuParticles3D _burnFx;
+    OmniLight3D _burnLight;
+
+    public bool Burning => _burnT > 0;
+    public bool Slowed => _slowT > 0;
 
     public void Setup(ZombieType type, int wave, bool rise)
     {
@@ -106,6 +113,8 @@ public partial class Zombie : CharacterBody3D
         }
 
         _attackCd -= dt; _stun -= dt;
+        UpdateStatus(dt);
+        if (Dead) return;
         _groan -= dt;
         if (_groan <= 0)
         {
@@ -174,7 +183,7 @@ public partial class Zombie : CharacterBody3D
             }
         }
 
-        float speed = _stun > 0 ? 0f : _speed;
+        float speed = _stun > 0 ? 0f : _speed * (_slowT > 0 ? _slowMul : 1f);
         var vel = Velocity;
         var hv = desired * speed + _knock;
         _knock = _knock.MoveToward(Vector3.Zero, dt * 30f);
@@ -224,27 +233,86 @@ public partial class Zombie : CharacterBody3D
         _model.Rotation = new Vector3(0, _yaw, 0);
     }
 
-    public void TakeDamage(float dmg, Vector3 pos, Vector3 dir, bool headshot, float knock = 2.5f, bool explosive = false)
+    /// Slow movement to `mult` of normal speed for `time` seconds (strongest active slow wins).
+    public void Slow(float mult, float time)
+    {
+        if (Dead) return;
+        _slowMul = _slowT > 0 ? Mathf.Min(_slowMul, mult) : mult;
+        _slowT = Mathf.Max(_slowT, time);
+    }
+
+    /// Set on fire: `dps` damage per second for `time` seconds (refreshes, keeps the hotter flame).
+    public void Ignite(float dps, float time)
+    {
+        if (Dead || _rise > 0) return;
+        if (_burnT <= 0) _burnTick = 0.1f;
+        _burnDps = _burnT > 0 ? Mathf.Max(_burnDps, dps) : dps;
+        _burnT = Mathf.Max(_burnT, time);
+    }
+
+    void UpdateStatus(float dt)
+    {
+        if (_slowT > 0) { _slowT -= dt; if (_slowT <= 0) _slowMul = 1f; }
+        bool burning = _burnT > 0;
+        if (burning)
+        {
+            _burnT -= dt;
+            _burnTick -= dt;
+            if (_burnTick <= 0)
+            {
+                const float tick = 0.35f;
+                _burnTick += tick;
+                // fall away from where we're facing if the fire finishes us off
+                var back = -new Vector3(Mathf.Sin(_yaw), 0, Mathf.Cos(_yaw));
+                TakeDamage(_burnDps * tick, GlobalPosition + Vector3.Up * Height * 0.6f, back, false, 0f, false, true);
+            }
+        }
+        if (burning && _burnFx == null)
+        {
+            _burnFx = new CpuParticles3D
+            {
+                Amount = 24, Lifetime = 0.5f, Mesh = new BoxMesh { Size = Vector3.One * 0.16f * (_scale / 0.62f), Material = FlameJet.ParticleMaterial },
+                EmissionShape = CpuParticles3D.EmissionShapeEnum.Box, EmissionBoxExtents = new Vector3(0.35f, Height * 0.4f, 0.35f) * (_scale / 0.62f),
+                Position = Vector3.Up * Height * 0.45f, Direction = Vector3.Up, Spread = 20f, Gravity = new Vector3(0, 3f, 0),
+                InitialVelocityMin = 0.5f, InitialVelocityMax = 1.6f, ScaleAmountMin = 0.6f, ScaleAmountMax = 1.3f,
+                ColorRamp = FlameJet.FireRamp, CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            };
+            AddChild(_burnFx);
+            _burnLight = new OmniLight3D { LightColor = new Color(1f, 0.5f, 0.15f), LightEnergy = 1.8f, OmniRange = 3.5f, ShadowEnabled = false,
+                Position = Vector3.Up * Height * 0.6f };
+            AddChild(_burnLight);
+        }
+        if (_burnFx != null)
+        {
+            bool on = _burnT > 0 && !Dead;
+            _burnFx.Emitting = on;
+            _burnLight.Visible = on;
+            if (on) _burnLight.LightEnergy = 1.4f + 0.6f * Mathf.Sin(Time.GetTicksMsec() * 0.03f + _phase);
+        }
+    }
+
+    public void TakeDamage(float dmg, Vector3 pos, Vector3 dir, bool headshot, float knock = 2.5f, bool explosive = false, bool minor = false)
     {
         if (Dead || _rise > 0) return;
         var main = Main.Instance;
-        Hits++;
+        if (!minor) Hits++;
         if (headshot) { dmg *= 2f; Headshots++; if (Type == ZombieType.Brute) BruteHeadshots++; }
         _hp -= dmg;
-        _model.Flash(1f);
+        _model.Flash(minor ? 0.4f : 1f);
         float kres = Type == ZombieType.Brute ? 0.25f : 1f;
         var kd = dir; kd.Y = 0;
-        _knock += kd.Normalized() * knock * kres;
-        if (Type != ZombieType.Brute) _stun = Mathf.Max(_stun, 0.12f);
+        if (knock > 0 && kd.LengthSquared() > 0.0001f) _knock += kd.Normalized() * knock * kres;
+        // minor hits (fire ticks, flame licks) shouldn't stun-lock or spam feedback
+        if (Type != ZombieType.Brute && !minor) _stun = Mathf.Max(_stun, 0.12f);
         float fl = Type == ZombieType.Brute ? 0.4f : 1f;
-        _flinch = Mathf.Min(1.2f, _flinch + (explosive ? 1f : 0.5f) * fl);
+        _flinch = Mathf.Min(1.2f, _flinch + (explosive ? 1f : minor ? 0.12f : 0.5f) * fl);
         if (headshot) _headFlinch = 1f * fl;
         _lastExplosive = explosive;
-        Fx.Burst(pos, new Color(0.45f, 0.08f, 0.06f), headshot ? 14 : 7, 5f, 0.09f, 0.5f, -dir + Vector3.Up * 0.5f, 45f);
-        Fx.Number(pos + Vector3.Up * 0.3f, Mathf.RoundToInt(dmg).ToString(),
-            headshot ? new Color(1f, 0.85f, 0.2f) : Colors.White, headshot ? 1.4f : 1f);
-        Sfx.Play3D(headshot ? "headshot" : "hit", pos, headshot ? 0f : -3f, 0.15f);
-        main.Hud?.HitMarker(headshot, _hp <= 0);
+        if (!minor) Fx.Burst(pos, new Color(0.45f, 0.08f, 0.06f), headshot ? 14 : 7, 5f, 0.09f, 0.5f, -dir + Vector3.Up * 0.5f, 45f);
+        Fx.Number(pos + Vector3.Up * 0.3f, Mathf.Max(1, Mathf.RoundToInt(dmg)).ToString(),
+            headshot ? new Color(1f, 0.85f, 0.2f) : minor ? new Color(1f, 0.6f, 0.25f) : Colors.White, headshot ? 1.4f : minor ? 0.7f : 1f);
+        if (!minor || GD.Randf() < 0.2f) Sfx.Play3D(headshot ? "headshot" : "hit", pos, headshot ? 0f : minor ? -9f : -3f, 0.15f);
+        if (!minor || _hp <= 0) main.Hud?.HitMarker(headshot, _hp <= 0);
         if (_hp <= 0) Die(dir, headshot);
     }
 

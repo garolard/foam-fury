@@ -362,7 +362,7 @@ public partial class Main : Node3D
         Rig.Yaw = Mathf.LerpAngle(Rig.Yaw, Mathf.Atan2(-to.X, -to.Z) + 0.12f, 0.3f);
         Rig.Pitch = Mathf.Lerp(Rig.Pitch, Mathf.Atan2(to.Y, new Vector2(to.X, to.Z).Length()), 0.3f);
         if (Engine.GetProcessFrames() % 3 == 0) Input.ActionPress("fire");
-        if (Engine.GetProcessFrames() % 500 == 0) Input.ActionPress("weapon_next"); else Input.ActionRelease("weapon_next");
+        if (Engine.GetProcessFrames() % 500 == 0 && OS.GetEnvironment("FF_KEEPWEAPON") != "1") Input.ActionPress("weapon_next"); else Input.ActionRelease("weapon_next");
         if (Engine.GetProcessFrames() % 700 == 0) Input.ActionPress("grenade"); else Input.ActionRelease("grenade");
         if (OS.GetEnvironment("FF_TOP") == "1" && _topCam == null)
         {

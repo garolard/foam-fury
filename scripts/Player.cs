@@ -6,7 +6,9 @@ public partial class Player : CharacterBody3D
     public float Hp, MaxHp;
     public bool Dead;
     public int WeaponIndex;
-    public int[] Mag = new int[4], Reserve = new int[4];
+    /// Shared blasters plus the character's signature weapon (if any).
+    public WeaponDef[] Weapons;
+    public int[] Mag, Reserve;
     public int Grenades;
     public float ReloadProgress = -1f; // -1 not reloading, else 0..1
     public float Spread;               // current spread in degrees
@@ -26,8 +28,9 @@ public partial class Player : CharacterBody3D
     Vector3 _dashDir, _knock;
     float _snapYaw0, _snapPitch0, _snapYaw1, _snapPitch1;
     bool _wasAim;
+    float _flameSfx;
 
-    public WeaponDef Weapon => GameData.Weapons[WeaponIndex];
+    public WeaponDef Weapon => Weapons[WeaponIndex];
 
     public void Setup(CharacterDef def, CameraRig rig)
     {
@@ -35,10 +38,13 @@ public partial class Player : CharacterBody3D
         _rig = rig;
         MaxHp = Hp = def.MaxHp;
         Grenades = def.Grenades;
-        for (int i = 0; i < 4; i++)
+        Weapons = def.Signature != null ? [.. GameData.Weapons, def.Signature] : GameData.Weapons;
+        Mag = new int[Weapons.Length];
+        Reserve = new int[Weapons.Length];
+        for (int i = 0; i < Weapons.Length; i++)
         {
-            Mag[i] = GameData.Weapons[i].MagSize;
-            Reserve[i] = GameData.Weapons[i].StartReserve;
+            Mag[i] = Weapons[i].MagSize;
+            Reserve[i] = Weapons[i].StartReserve;
         }
     }
 
@@ -55,7 +61,8 @@ public partial class Player : CharacterBody3D
         Model.Play("idle");
         _gun = new Node3D { TopLevel = true };
         AddChild(_gun);
-        EquipWeapon(0, true);
+        // signature weapons are the character's identity, so start with it in hand
+        EquipWeapon(Weapons.Length - 1, true);
         _rig.Target = this;
         _rig.Arm.AddExcludedObject(GetRid());
         _yaw = _rig.Yaw + Mathf.Pi;
@@ -69,13 +76,14 @@ public partial class Player : CharacterBody3D
         ReloadProgress = -1f;
         _fireCd = Mathf.Max(_fireCd, 0.2f);
         foreach (var c in _gun.GetChildren()) c.QueueFree();
-        var m = Assets.Model("kit", Weapon.Model);
+        var m = Assets.Model(Weapon.Pack, Weapon.Model);
         float s = 0.7f * Weapon.Scale;
+        if (Weapon.FlipModel) m.RotationDegrees = new Vector3(0, 180, 0);
         _gun.AddChild(m);
         float minZ = 0;
         foreach (var mi in Assets.FindMeshes(m))
         {
-            var ab = mi.Transform * mi.GetAabb();
+            var ab = m.Transform * mi.Transform * mi.GetAabb();
             minZ = Mathf.Min(minZ, ab.Position.Z);
         }
         _muzzleDist = -minZ * s;
@@ -198,7 +206,7 @@ public partial class Player : CharacterBody3D
         // ----- weapons -----
         if (Input.IsActionJustPressed("weapon_next")) CycleWeapon(1);
         if (Input.IsActionJustPressed("weapon_prev")) CycleWeapon(-1);
-        for (int i = 0; i < 4; i++) if (Input.IsActionJustPressed($"weapon_{i + 1}")) EquipWeapon(i);
+        for (int i = 0; i < Weapons.Length; i++) if (Input.IsActionJustPressed($"weapon_{i + 1}")) EquipWeapon(i);
 
         if (Input.IsActionJustPressed("reload")) StartReload();
         if (ReloadProgress >= 0)
@@ -358,9 +366,10 @@ public partial class Player : CharacterBody3D
 
     void CycleWeapon(int d)
     {
-        for (int k = 1; k <= 4; k++)
+        int n = Weapons.Length;
+        for (int k = 1; k <= n; k++)
         {
-            int i = ((WeaponIndex + d * k) % 4 + 4) % 4;
+            int i = ((WeaponIndex + d * k) % n + n) % n;
             if (Mag[i] > 0 || Reserve[i] != 0) { EquipWeapon(i); return; }
         }
     }
@@ -402,10 +411,25 @@ public partial class Player : CharacterBody3D
         for (int i = 0; i < w.Pellets; i++)
         {
             var dir = ApplySpread(baseDir, Spread);
-            Projectile.Fire(muzzle, dir, w, Def.DamageMult, GetRid());
+            switch (w.Kind)
+            {
+                case FireKind.Mud: MudGlob.Fire(muzzle, dir, w, Def.DamageMult, GetRid()); break;
+                case FireKind.Flame: FlameJet.Fire(muzzle, dir, Velocity, w, Def.DamageMult); break;
+                default: Projectile.Fire(muzzle, dir, w, Def.DamageMult, GetRid()); break;
+            }
         }
-        Fx.MuzzleFlash(muzzle, baseDir, w.Tracer);
-        Sfx.Play(w.Sound, w.Pellets > 1 ? 0f : -3f, 0.06f);
+        if (w.Kind == FireKind.Flame)
+        {
+            Fx.Flash(muzzle, w.Tracer, 2.5f, 6f, 0.1f);
+            // continuous hiss: don't restart the sound every 50 ms
+            _flameSfx -= w.FireRate;
+            if (_flameSfx <= 0) { Sfx.Play(w.Sound, -6f, 0.08f); _flameSfx = 0.18f; }
+        }
+        else
+        {
+            Fx.MuzzleFlash(muzzle, baseDir, w.Tracer);
+            Sfx.Play(w.Sound, w.Pellets > 1 ? 0f : -3f, 0.06f);
+        }
         _rig.Recoil += Mathf.DegToRad(w.Recoil);
         _rig.AddTrauma(w.Pellets > 1 ? 0.25f : w.Recoil * 0.04f);
         _bloom = Mathf.Min(_bloom + w.Recoil * 0.6f, 6f);
@@ -474,9 +498,8 @@ public partial class Player : CharacterBody3D
                 Main.Instance.Hud?.Toast("+HEALTH", new Color(1f, 0.35f, 0.4f));
                 break;
             case PickupKind.Ammo:
-                int[] amounts = { 0, 40, 8, 6 };
-                for (int i = 1; i < 4; i++)
-                    Reserve[i] = Mathf.Min(GameData.Weapons[i].MaxReserve, Reserve[i] + amounts[i]);
+                for (int i = 0; i < Weapons.Length; i++)
+                    if (Reserve[i] >= 0) Reserve[i] = Mathf.Min(Weapons[i].MaxReserve, Reserve[i] + Weapons[i].AmmoPickup);
                 Main.Instance.Hud?.Toast("+AMMO", new Color(1f, 0.8f, 0.2f));
                 break;
             case PickupKind.Grenade:

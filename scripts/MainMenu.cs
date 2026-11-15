@@ -441,7 +441,7 @@ public partial class MainMenu : CanvasLayer
             _cIndex.Text = $"SURVIVOR  {i + 1} / {_chars.Count}";
             _cName.Text = c.Name;
             _cTitle.Text = c.Title.ToUpper();
-            _cPerk.Text = "★  " + c.Perk.ToUpper();
+            _cPerk.Text = "★  " + c.Perk.ToUpper() + (c.Signature != null ? $"\n★  SIGNATURE: {c.Signature.Name.ToUpper()}" : "");
             float[] vals = { c.MaxHp / 160f, c.Speed / 7.4f, c.DamageMult / 1.25f, 0.55f / c.ReloadMult, c.Grenades / 6f };
             string[] txt = { $"{c.MaxHp:0}", $"{c.Speed:0.0}", $"{c.DamageMult * 100:0}%", $"{100 / c.ReloadMult:0}%", $"{c.Grenades}" };
             for (int k = 0; k < _cStats.Count; k++) { _cStats[k].bar.Target = vals[k]; _cStats[k].value.Text = txt[k]; }

@@ -39,6 +39,9 @@ public static class InputSetup
         Button("weapon_2", JoyButton.DpadUp, Key.Key2);
         Button("weapon_3", JoyButton.DpadRight, Key.Key3);
         Button("weapon_4", JoyButton.DpadDown, Key.Key4);
+        // signature weapon slot (pad reaches it with LB/RB cycling; the d-pad is full)
+        Add("weapon_5", 0.5f);
+        AddKey("weapon_5", Key.Key5);
 
         // Godot's default ui_accept/ui_cancel have no gamepad bindings, so menu buttons
         // (pause, game over) couldn't be pressed with a controller.

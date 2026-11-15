@@ -47,6 +47,7 @@ public partial class Grenade : RigidBody3D
     {
         var pos = GlobalPosition;
         Fx.Explosion(pos, _radius);
+        MudPuddle.IgniteAt(pos, _radius * 0.8f);
         Sfx.Play3D("explosion", pos, 4f, 0.1f);
         Main.Instance.Rig?.AddTrauma(0.7f);
         InputSetup.Rumble(0.8f, 1f, 0.45f);
