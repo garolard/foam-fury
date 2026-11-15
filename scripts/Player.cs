@@ -1,0 +1,439 @@
+using Godot;
+
+public partial class Player : CharacterBody3D
+{
+    public CharacterDef Def;
+    public float Hp, MaxHp;
+    public bool Dead;
+    public int WeaponIndex;
+    public int[] Mag = new int[4], Reserve = new int[4];
+    public int Grenades;
+    public float ReloadProgress = -1f; // -1 not reloading, else 0..1
+    public float Spread;               // current spread in degrees
+    public bool AimingAtEnemy;
+    public float DashReady = 1f;
+    public bool UsingPad = true;
+    public Vector3 AimPoint;
+
+    public CharacterModel Model;
+    CameraRig _rig;
+    Node3D _gun;
+    float _muzzleDist;
+    float _fireCd, _reloadTimer, _lastShot = 10f, _armBlend, _yaw, _invuln, _sinceHurt = 10f;
+    float _dashTime, _dashCd, _bloom, _snapT = -1f;
+    Vector3 _dashDir, _knock;
+    float _snapYaw0, _snapPitch0, _snapYaw1, _snapPitch1;
+    bool _wasAim;
+
+    public WeaponDef Weapon => GameData.Weapons[WeaponIndex];
+
+    public void Setup(CharacterDef def, CameraRig rig)
+    {
+        Def = def;
+        _rig = rig;
+        MaxHp = Hp = def.MaxHp;
+        Grenades = def.Grenades;
+        for (int i = 0; i < 4; i++)
+        {
+            Mag[i] = GameData.Weapons[i].MagSize;
+            Reserve[i] = GameData.Weapons[i].StartReserve;
+        }
+    }
+
+    public override void _Ready()
+    {
+        CollisionLayer = 2;
+        CollisionMask = 1 | 4 | 16;
+        FloorSnapLength = 0.3f;
+        FloorMaxAngle = Mathf.DegToRad(50);
+        var cap = new CollisionShape3D { Shape = new CapsuleShape3D { Radius = 0.38f, Height = 1.8f }, Position = new Vector3(0, 0.9f, 0) };
+        AddChild(cap);
+        Model = new CharacterModel(Def.Skin, 0.62f);
+        AddChild(Model);
+        Model.Play("idle");
+        _gun = new Node3D { TopLevel = true };
+        AddChild(_gun);
+        EquipWeapon(0, true);
+        _rig.Target = this;
+        _rig.Arm.AddExcludedObject(GetRid());
+        _yaw = _rig.Yaw + Mathf.Pi;
+    }
+
+    void EquipWeapon(int i, bool force = false)
+    {
+        if (i == WeaponIndex && !force) return;
+        if (!force && Reserve[i] == 0 && Mag[i] == 0) { Sfx.Play("empty"); return; }
+        WeaponIndex = i;
+        ReloadProgress = -1f;
+        _fireCd = Mathf.Max(_fireCd, 0.2f);
+        foreach (var c in _gun.GetChildren()) c.QueueFree();
+        var m = Assets.Model("kit", Weapon.Model);
+        float s = 0.7f * Weapon.Scale;
+        _gun.AddChild(m);
+        float minZ = 0;
+        foreach (var mi in Assets.FindMeshes(m))
+        {
+            var ab = mi.Transform * mi.GetAabb();
+            minZ = Mathf.Min(minZ, ab.Position.Z);
+        }
+        _muzzleDist = -minZ * s;
+        if (!force) Sfx.Play("reload", -6f);
+        Main.Instance.Hud?.WeaponChanged();
+    }
+
+    public override void _Input(InputEvent e)
+    {
+        if (e is InputEventJoypadButton || (e is InputEventJoypadMotion jm && Mathf.Abs(jm.AxisValue) > 0.3f)) UsingPad = true;
+        else if (e is InputEventMouseMotion || e is InputEventKey || e is InputEventMouseButton) UsingPad = false;
+    }
+
+    public override void _UnhandledInput(InputEvent e)
+    {
+        if (Dead) return;
+        if (e is InputEventMouseMotion mm && Input.MouseMode == Input.MouseModeEnum.Captured)
+        {
+            float sens = 0.0025f * (Input.IsActionPressed("aim") ? 0.6f : 1f);
+            _rig.Yaw -= mm.Relative.X * sens;
+            _rig.Pitch -= mm.Relative.Y * sens;
+        }
+    }
+
+    public override void _PhysicsProcess(double delta)
+    {
+        float dt = (float)delta;
+        if (Dead)
+        {
+            var v = Velocity; v.X = Mathf.MoveToward(v.X, 0, dt * 20); v.Z = Mathf.MoveToward(v.Z, 0, dt * 20);
+            if (!IsOnFloor()) v.Y -= 22f * dt;
+            Velocity = v; MoveAndSlide();
+            return;
+        }
+        _lastShot += dt; _fireCd -= dt; _invuln -= dt; _sinceHurt += dt; _dashCd -= dt;
+        bool aiming = Input.IsActionPressed("aim");
+        _rig.Aiming = aiming;
+
+        // ----- camera look (stick) -----
+        var look = Input.GetVector("look_left", "look_right", "look_up", "look_down");
+        look = new Vector2(look.X * Mathf.Abs(look.X), look.Y * Mathf.Abs(look.Y));
+        UpdateAimTarget();
+        float friction = (UsingPad && AimingAtEnemy) ? 0.45f : 1f;
+        float aimMul = aiming ? 0.5f : 1f;
+        _rig.Yaw -= look.X * 3.6f * aimMul * friction * dt;
+        _rig.Pitch -= look.Y * 2.4f * aimMul * friction * dt;
+        if (aiming && !_wasAim && UsingPad) TryAimSnap();
+        _wasAim = aiming;
+        if (_snapT >= 0)
+        {
+            _snapT += dt / 0.12f;
+            float t = Mathf.SmoothStep(0, 1, Mathf.Min(1, _snapT));
+            _rig.Yaw = Mathf.LerpAngle(_snapYaw0, _snapYaw1, t);
+            _rig.Pitch = Mathf.Lerp(_snapPitch0, _snapPitch1, t);
+            if (_snapT >= 1) _snapT = -1;
+        }
+
+        // ----- movement -----
+        var input = Input.GetVector("move_left", "move_right", "move_forward", "move_back");
+        var camBasis = new Basis(Vector3.Up, _rig.Yaw);
+        var move = camBasis * new Vector3(input.X, 0, input.Y);
+        if (move.Length() > 1) move = move.Normalized();
+        float speed = Def.Speed * (aiming ? 0.6f : 1f) * (ReloadProgress >= 0 ? 0.85f : 1f);
+
+        var vel = Velocity;
+        if (Input.IsActionJustPressed("dash") && _dashCd <= 0)
+        {
+            _dashDir = move.LengthSquared() > 0.01f ? move.Normalized() : -camBasis.Z;
+            _dashTime = 0.2f * Def.DashMult;
+            _dashCd = 0.9f;
+            _invuln = Mathf.Max(_invuln, 0.3f);
+            Sfx.Play("dash", -2f);
+            Fx.SpawnDust(GlobalPosition);
+        }
+        DashReady = Mathf.Clamp(1f - _dashCd / 0.9f, 0, 1);
+        Vector3 hv;
+        if (_dashTime > 0)
+        {
+            _dashTime -= dt;
+            hv = _dashDir * 17f;
+        }
+        else
+        {
+            var cur = new Vector3(vel.X, 0, vel.Z);
+            float accel = IsOnFloor() ? 50f : 18f;
+            hv = cur.MoveToward(move * speed, accel * dt);
+        }
+        hv += _knock;
+        _knock = _knock.MoveToward(Vector3.Zero, dt * 25f);
+        vel.X = hv.X; vel.Z = hv.Z;
+        if (IsOnFloor())
+        {
+            if (Input.IsActionJustPressed("jump")) { vel.Y = 8.2f; Model.Play("jump", 1.2f, 0.1f); }
+        }
+        else vel.Y -= 22f * dt;
+        Velocity = vel;
+        MoveAndSlide();
+
+        // ----- facing -----
+        bool combat = aiming || _lastShot < 0.8f || ReloadProgress >= 0;
+        float targetYaw = _yaw;
+        if (combat) targetYaw = _rig.Yaw + Mathf.Pi;
+        else if (move.LengthSquared() > 0.01f) targetYaw = Mathf.Atan2(move.X, move.Z);
+        _yaw = Mathf.LerpAngle(_yaw, targetYaw, Mathf.Min(1, dt * (combat ? 20f : 12f)));
+        Model.Rotation = new Vector3(0, _yaw, 0);
+
+        // ----- animation -----
+        var flat = new Vector3(vel.X, 0, vel.Z).Length();
+        if (!IsOnFloor()) Model.Play("jump", 1f, 0.15f);
+        else if (flat > 0.5f) Model.Play("run", Mathf.Clamp(flat / 6.2f, 0.6f, 1.4f) * 1.1f);
+        else Model.Play("idle");
+
+        // ----- weapons -----
+        if (Input.IsActionJustPressed("weapon_next")) CycleWeapon(1);
+        if (Input.IsActionJustPressed("weapon_prev")) CycleWeapon(-1);
+        for (int i = 0; i < 4; i++) if (Input.IsActionJustPressed($"weapon_{i + 1}")) EquipWeapon(i);
+
+        if (Input.IsActionJustPressed("reload")) StartReload();
+        if (ReloadProgress >= 0)
+        {
+            _reloadTimer -= dt;
+            ReloadProgress = 1f - _reloadTimer / (Weapon.ReloadTime * Def.ReloadMult);
+            if (_reloadTimer <= 0) FinishReload();
+        }
+
+        bool trigger = Weapon.Auto ? Input.IsActionPressed("fire") : Input.IsActionJustPressed("fire");
+        if (trigger && _fireCd <= 0 && ReloadProgress < 0)
+        {
+            if (Mag[WeaponIndex] > 0) Shoot();
+            else if (Input.IsActionJustPressed("fire"))
+            {
+                if (!StartReload()) { Sfx.Play("empty"); _fireCd = 0.25f; }
+            }
+        }
+
+        if (Input.IsActionJustPressed("grenade") && Grenades > 0) ThrowGrenade();
+
+        _bloom = Mathf.MoveToward(_bloom, 0, dt * 12f);
+        float moveSpread = flat > 0.5f ? 1.5f : 1f;
+        Spread = Weapon.Spread * (aiming ? 0.5f : 1f) * moveSpread + _bloom;
+
+        // regen up to 50%
+        if (_sinceHurt > 5f && Hp < MaxHp * 0.5f) Hp = Mathf.Min(MaxHp * 0.5f, Hp + 4f * dt);
+
+        if (GlobalPosition.Y < -10) { GlobalPosition = new Vector3(0, 1, 6); Velocity = Vector3.Zero; }
+    }
+
+    public override void _Process(double delta)
+    {
+        float dt = (float)delta;
+        bool armsUp = !Dead && (Input.IsActionPressed("aim") || _lastShot < 0.8f);
+        _armBlend = Mathf.MoveToward(_armBlend, armsUp ? 1f : 0f, dt * 8f);
+        Model.Arms.Influence = Mathf.SmoothStep(0, 1, _armBlend) * 0.95f;
+
+        var muzzleBase = Model.RightHand.GlobalPosition;
+        var aimDir = (AimPoint - muzzleBase).Normalized();
+        var fwd = Model.GlobalBasis.Z.Normalized();
+        var right = Model.GlobalBasis.X.Normalized();
+        // never point arms backwards relative to body
+        if (aimDir.Dot(fwd) < 0.2f) aimDir = (aimDir + fwd * 0.8f).Normalized();
+        Model.Arms.RightDir = aimDir;
+        Model.Arms.LeftDir = (aimDir - right * 0.55f).Normalized(); // reaches across to support the blaster
+
+        var idleDir = (fwd - Vector3.Up * 0.25f).Normalized();
+        var gunDir = idleDir.Slerp(aimDir, Mathf.SmoothStep(0, 1, _armBlend));
+        float s = 0.7f * Weapon.Scale;
+        if (gunDir.LengthSquared() > 0.01f)
+            _gun.GlobalTransform = new Transform3D(Basis.LookingAt(gunDir, Vector3.Up).Scaled(Vector3.One * s), muzzleBase + gunDir * 0.05f);
+        _gun.Visible = !Dead || _gun.Visible;
+    }
+
+    Vector3 MuzzlePos => _gun.GlobalPosition - _gun.GlobalBasis.Z.Normalized() * _muzzleDist + _gun.GlobalBasis.Y.Normalized() * 0.04f;
+
+    void UpdateAimTarget()
+    {
+        var cam = _rig.Camera;
+        var from = cam.GlobalPosition;
+        var dir = -cam.GlobalBasis.Z;
+        float skip = (GlobalPosition + Vector3.Up * 1.4f - from).Dot(dir);
+        from += dir * Mathf.Max(0, skip);
+        var q = PhysicsRayQueryParameters3D.Create(from, from + dir * 200f, 1 | 4, new Godot.Collections.Array<Rid> { GetRid() });
+        var hit = GetWorld3D().DirectSpaceState.IntersectRay(q);
+        AimPoint = hit.Count > 0 ? hit["position"].AsVector3() : from + dir * 200f;
+        AimingAtEnemy = hit.Count > 0 && hit["collider"].AsGodotObject() is Zombie;
+        // pad aim assist: magnetic slowdown near enemies
+        if (!AimingAtEnemy && UsingPad)
+        {
+            var vp = GetViewport().GetVisibleRect().Size;
+            var center = vp / 2f;
+            foreach (var z in Main.Instance.Zombies)
+            {
+                if (z.Dead || cam.IsPositionBehind(z.AimPoint)) continue;
+                if (cam.UnprojectPosition(z.AimPoint).DistanceTo(center) < vp.Y * 0.06f) { AimingAtEnemy = true; break; }
+            }
+        }
+    }
+
+    void TryAimSnap()
+    {
+        var cam = _rig.Camera;
+        var vp = GetViewport().GetVisibleRect().Size;
+        var center = vp / 2f;
+        Zombie best = null; float bestD = vp.Y * 0.18f;
+        foreach (var z in Main.Instance.Zombies)
+        {
+            if (z.Dead || cam.IsPositionBehind(z.AimPoint)) continue;
+            if (z.GlobalPosition.DistanceTo(GlobalPosition) > 35f) continue;
+            float d = cam.UnprojectPosition(z.AimPoint).DistanceTo(center);
+            if (d < bestD) { bestD = d; best = z; }
+        }
+        if (best == null) return;
+        var to = best.AimPoint - cam.GlobalPosition;
+        _snapYaw0 = _rig.Yaw; _snapPitch0 = _rig.Pitch;
+        // approximate yaw/pitch that centers the target (camera is offset; good enough as assist)
+        var pivotTo = best.AimPoint - _rig.GlobalPosition;
+        _snapYaw1 = Mathf.Atan2(-pivotTo.X, -pivotTo.Z);
+        float horiz = new Vector2(to.X, to.Z).Length();
+        _snapPitch1 = Mathf.Atan2(to.Y, horiz);
+        // blend partway (assist, not lock)
+        _snapYaw1 = Mathf.LerpAngle(_snapYaw0, _snapYaw1, 0.85f);
+        _snapPitch1 = Mathf.Lerp(_snapPitch0, _snapPitch1, 0.85f);
+        _snapT = 0;
+    }
+
+    void CycleWeapon(int d)
+    {
+        for (int k = 1; k <= 4; k++)
+        {
+            int i = ((WeaponIndex + d * k) % 4 + 4) % 4;
+            if (Mag[i] > 0 || Reserve[i] != 0) { EquipWeapon(i); return; }
+        }
+    }
+
+    bool StartReload()
+    {
+        var w = Weapon;
+        if (ReloadProgress >= 0 || Mag[WeaponIndex] >= w.MagSize || Reserve[WeaponIndex] == 0) return false;
+        _reloadTimer = w.ReloadTime * Def.ReloadMult;
+        ReloadProgress = 0;
+        Sfx.Play("reload", -4f);
+        return true;
+    }
+
+    void FinishReload()
+    {
+        var w = Weapon;
+        int need = w.MagSize - Mag[WeaponIndex];
+        int take = Reserve[WeaponIndex] < 0 ? need : Mathf.Min(need, Reserve[WeaponIndex]);
+        Mag[WeaponIndex] += take;
+        if (Reserve[WeaponIndex] > 0) Reserve[WeaponIndex] -= take;
+        ReloadProgress = -1f;
+    }
+
+    void Shoot()
+    {
+        var w = Weapon;
+        Mag[WeaponIndex]--;
+        _fireCd = w.FireRate;
+        _lastShot = 0;
+        // make sure arms are up so the muzzle points where we aim
+        _armBlend = Mathf.Max(_armBlend, 0.7f);
+        _yaw = _rig.Yaw + Mathf.Pi;
+        Model.Rotation = new Vector3(0, _yaw, 0);
+        var muzzle = MuzzlePos;
+        var baseDir = (AimPoint - muzzle).Normalized();
+        // if aim point is behind the muzzle (very close geometry) use camera dir
+        if (baseDir.Dot(-_rig.Camera.GlobalBasis.Z) < 0.3f) baseDir = -_rig.Camera.GlobalBasis.Z;
+        for (int i = 0; i < w.Pellets; i++)
+        {
+            var dir = ApplySpread(baseDir, Spread);
+            Projectile.Fire(muzzle, dir, w, Def.DamageMult, GetRid());
+        }
+        Fx.MuzzleFlash(muzzle, baseDir, w.Tracer);
+        Sfx.Play(w.Sound, w.Pellets > 1 ? 0f : -3f, 0.06f);
+        _rig.Recoil += Mathf.DegToRad(w.Recoil);
+        _rig.AddTrauma(w.Pellets > 1 ? 0.25f : w.Recoil * 0.04f);
+        _bloom = Mathf.Min(_bloom + w.Recoil * 0.6f, 6f);
+        InputSetup.Rumble(0.25f + w.Recoil * 0.06f, w.Pellets > 1 ? 0.6f : 0.1f, 0.08f);
+        if (Mag[WeaponIndex] == 0) StartReload();
+    }
+
+    static Vector3 ApplySpread(Vector3 dir, float deg)
+    {
+        if (deg <= 0.01f) return dir;
+        var up = Mathf.Abs(dir.Y) > 0.95f ? Vector3.Right : Vector3.Up;
+        var r = dir.Cross(up).Normalized();
+        var u = r.Cross(dir).Normalized();
+        float a = (float)GD.RandRange(0, Mathf.Tau);
+        float m = Mathf.Tan(Mathf.DegToRad(deg)) * Mathf.Sqrt(GD.Randf());
+        return (dir + (r * Mathf.Cos(a) + u * Mathf.Sin(a)) * m).Normalized();
+    }
+
+    void ThrowGrenade()
+    {
+        Grenades--;
+        var dir = -_rig.Camera.GlobalBasis.Z;
+        var pos = GlobalPosition + Vector3.Up * 1.6f + new Vector3(dir.X, 0, dir.Z).Normalized() * 0.6f;
+        Grenade.Throw(pos, dir * 15f + Vector3.Up * 4.5f + new Vector3(Velocity.X, 0, Velocity.Z) * 0.5f, Def.BlastMult);
+        Sfx.Play("throw");
+        _lastShot = 0.3f;
+    }
+
+    public void TakeDamage(float dmg, Vector3 dir, float knock)
+    {
+        if (Dead || _invuln > 0) return;
+        Hp -= dmg;
+        _invuln = 0.45f;
+        _sinceHurt = 0;
+        _knock += dir * knock;
+        Model.Flash(0.8f);
+        _rig.AddTrauma(0.45f);
+        InputSetup.Rumble(0.6f, 0.8f, 0.25f);
+        Sfx.Play("hurt", 0f, 0.1f);
+        Main.Instance.Hud?.Hurt(dmg / MaxHp);
+        if (Hp <= 0) { Hp = 0; Die(dir); }
+    }
+
+    void Die(Vector3 dir)
+    {
+        Dead = true;
+        Model.Arms.Influence = 0;
+        Model.Play("idle", 0f);
+        _gun.Visible = false;
+        var axis = Vector3.Up.Cross(dir.Normalized()).Normalized();
+        if (axis.LengthSquared() < 0.1f) axis = Vector3.Right;
+        var start = Model.Quaternion;
+        var end = new Quaternion(axis, Mathf.Pi / 2f) * start;
+        var tw = CreateTween();
+        tw.TweenMethod(Callable.From<float>(t => Model.Quaternion = start.Slerp(end, t)), 0f, 1f, 0.6f)
+          .SetEase(Tween.EaseType.In).SetTrans(Tween.TransitionType.Quad);
+        InputSetup.Rumble(1f, 1f, 0.8f);
+        Main.Instance.OnPlayerDied();
+    }
+
+    public bool TryCollect(PickupKind kind)
+    {
+        switch (kind)
+        {
+            case PickupKind.Health:
+                if (Hp >= MaxHp) return false;
+                Hp = Mathf.Min(MaxHp, Hp + MaxHp * 0.35f);
+                Main.Instance.Hud?.Toast("+HEALTH", new Color(1f, 0.35f, 0.4f));
+                break;
+            case PickupKind.Ammo:
+                int[] amounts = { 0, 40, 8, 6 };
+                for (int i = 1; i < 4; i++)
+                    Reserve[i] = Mathf.Min(GameData.Weapons[i].MaxReserve, Reserve[i] + amounts[i]);
+                Main.Instance.Hud?.Toast("+AMMO", new Color(1f, 0.8f, 0.2f));
+                break;
+            case PickupKind.Grenade:
+                if (Grenades >= 9) return false;
+                Grenades++;
+                Main.Instance.Hud?.Toast("+GRENADE", new Color(0.4f, 1f, 0.4f));
+                break;
+            case PickupKind.Coin:
+                Main.Instance.AddScore(250, GlobalPosition + Vector3.Up * 2f);
+                break;
+        }
+        Sfx.Play("pickup", -2f);
+        InputSetup.Rumble(0.2f, 0f, 0.06f);
+        return true;
+    }
+}

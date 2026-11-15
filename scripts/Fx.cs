@@ -1,0 +1,132 @@
+using Godot;
+using System.Collections.Generic;
+
+/// One-shot visual effects.
+public static class Fx
+{
+    static Node3D World => Main.Instance.World;
+    static readonly Dictionary<Color, StandardMaterial3D> _glow = new();
+    static readonly Queue<Node3D> _darts = new();
+
+    public static StandardMaterial3D Glow(Color c)
+    {
+        if (!_glow.TryGetValue(c, out var m))
+        {
+            m = new StandardMaterial3D { ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded, AlbedoColor = c * 2.2f };
+            m.AlbedoColor = new Color(c.R * 2.5f, c.G * 2.5f, c.B * 2.5f);
+            _glow[c] = m;
+        }
+        return m;
+    }
+
+    static void AutoFree(Node n, double t) => n.GetTree().CreateTimer(t, false).Timeout += () => { if (GodotObject.IsInstanceValid(n)) n.QueueFree(); };
+
+    public static void Burst(Vector3 pos, Color color, int count = 12, float speed = 5f, float size = 0.12f, float life = 0.6f, Vector3? dir = null, float spread = 60f, float gravity = 14f)
+    {
+        var p = new CpuParticles3D
+        {
+            Emitting = false, OneShot = true, Explosiveness = 1f, Amount = count, Lifetime = life,
+            Mesh = new BoxMesh { Size = Vector3.One * size, Material = new StandardMaterial3D { AlbedoColor = color, Roughness = 0.6f } },
+            Direction = dir ?? Vector3.Up, Spread = spread, InitialVelocityMin = speed * 0.5f, InitialVelocityMax = speed,
+            Gravity = new Vector3(0, -gravity, 0), ScaleAmountMin = 0.5f, ScaleAmountMax = 1.2f,
+            AngularVelocityMin = -360, AngularVelocityMax = 360, DampingMin = 1, DampingMax = 3,
+        };
+        var curve = new Curve();
+        curve.AddPoint(new Vector2(0, 1)); curve.AddPoint(new Vector2(0.7f, 0.8f)); curve.AddPoint(new Vector2(1, 0));
+        p.ScaleAmountCurve = curve;
+        World.AddChild(p);
+        p.GlobalPosition = pos;
+        p.Emitting = true;
+        AutoFree(p, life + 0.5);
+    }
+
+    public static void Flash(Vector3 pos, Color color, float energy = 3f, float range = 5f, float time = 0.06f)
+    {
+        var l = new OmniLight3D { LightColor = color, LightEnergy = energy, OmniRange = range, ShadowEnabled = false };
+        World.AddChild(l);
+        l.GlobalPosition = pos;
+        var tw = l.CreateTween();
+        tw.TweenProperty(l, "light_energy", 0f, time);
+        tw.TweenCallback(Callable.From(l.QueueFree));
+    }
+
+    public static void MuzzleFlash(Vector3 pos, Vector3 dir, Color color)
+    {
+        Flash(pos, color, 4f, 6f, 0.07f);
+        var m = new MeshInstance3D { Mesh = new SphereMesh { Radius = 0.12f, Height = 0.24f, RadialSegments = 8, Rings = 4 }, MaterialOverride = Glow(color),
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off };
+        World.AddChild(m);
+        m.GlobalPosition = pos;
+        m.Scale = new Vector3(1, 1, 1) * (float)GD.RandRange(0.8, 1.3);
+        var tw = m.CreateTween();
+        tw.TweenProperty(m, "scale", Vector3.One * 0.1f, 0.06f);
+        tw.TweenCallback(Callable.From(m.QueueFree));
+    }
+
+    public static void Number(Vector3 pos, string text, Color color, float size = 1f)
+    {
+        var l = new Label3D
+        {
+            Text = text, Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true, FontSize = 72, PixelSize = 0.004f * size,
+            OutlineSize = 18, Modulate = color, OutlineModulate = new Color(0, 0, 0, 0.85f), RenderPriority = 10, OutlineRenderPriority = 9,
+        };
+        l.Font = Main.TitleFont;
+        World.AddChild(l);
+        l.GlobalPosition = pos + new Vector3((float)GD.RandRange(-0.3, 0.3), 0, (float)GD.RandRange(-0.3, 0.3));
+        var tw = l.CreateTween().SetParallel();
+        tw.TweenProperty(l, "global_position", l.GlobalPosition + Vector3.Up * 1.0f, 0.8f).SetEase(Tween.EaseType.Out).SetTrans(Tween.TransitionType.Cubic);
+        tw.TweenProperty(l, "modulate:a", 0f, 0.35f).SetDelay(0.45f);
+        tw.TweenProperty(l, "outline_modulate:a", 0f, 0.35f).SetDelay(0.45f);
+        tw.Chain().TweenCallback(Callable.From(l.QueueFree));
+    }
+
+    public static void StuckDart(Vector3 pos, Vector3 dir, Color color)
+    {
+        var d = Assets.Model("kit", "bullet-foam-tip");
+        World.AddChild(d);
+        d.GlobalPosition = pos - dir * 0.12f;
+        d.GlobalBasis = new Basis(new Quaternion(Vector3.Down, dir.Normalized())).Scaled(Vector3.One * 5f);
+        _darts.Enqueue(d);
+        while (_darts.Count > 50)
+        {
+            var old = _darts.Dequeue();
+            if (GodotObject.IsInstanceValid(old)) old.QueueFree();
+        }
+    }
+
+    public static void ClearDarts() => _darts.Clear();
+
+    public static void Explosion(Vector3 pos, float radius)
+    {
+        Flash(pos + Vector3.Up, new Color(1f, 0.6f, 0.2f), 12f, radius * 3f, 0.4f);
+        Burst(pos + Vector3.Up * 0.3f, new Color(1f, 0.55f, 0.1f), 30, 14f, 0.3f, 0.7f, Vector3.Up, 80f, 8f);
+        Burst(pos + Vector3.Up * 0.3f, new Color(0.25f, 0.22f, 0.2f), 20, 9f, 0.35f, 1.2f, Vector3.Up, 70f, 4f);
+        var ball = new MeshInstance3D { Mesh = new SphereMesh { Radius = 1f, Height = 2f }, MaterialOverride = Glow(new Color(1f, 0.7f, 0.3f)),
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off };
+        World.AddChild(ball);
+        ball.GlobalPosition = pos + Vector3.Up * 0.5f;
+        ball.Scale = Vector3.One * 0.3f;
+        var tw = ball.CreateTween();
+        tw.TweenProperty(ball, "scale", Vector3.One * radius * 0.8f, 0.12f).SetEase(Tween.EaseType.Out);
+        tw.TweenProperty(ball, "scale", Vector3.One * 0.01f, 0.18f);
+        tw.TweenCallback(Callable.From(ball.QueueFree));
+        for (int i = 0; i < 5; i++)
+        {
+            var s = Assets.Model("kit", "smoke");
+            World.AddChild(s);
+            s.GlobalPosition = pos + new Vector3((float)GD.RandRange(-1, 1), 0.3f, (float)GD.RandRange(-1, 1)) * radius * 0.4f;
+            s.Scale = Vector3.One * 2f;
+            s.RotationDegrees = new Vector3(0, (float)GD.RandRange(0, 360), 0);
+            var t2 = s.CreateTween().SetParallel();
+            t2.TweenProperty(s, "scale", Vector3.One * (float)GD.RandRange(7, 11), 0.9f).SetEase(Tween.EaseType.Out).SetTrans(Tween.TransitionType.Cubic);
+            t2.TweenProperty(s, "global_position", s.GlobalPosition + Vector3.Up * 2.5f, 1.4f);
+            t2.Chain().TweenProperty(s, "scale", Vector3.One * 0.01f, 0.5f);
+            t2.Chain().TweenCallback(Callable.From(s.QueueFree));
+        }
+    }
+
+    public static void SpawnDust(Vector3 pos)
+    {
+        Burst(pos + Vector3.Up * 0.1f, new Color(0.45f, 0.33f, 0.22f), 18, 5f, 0.22f, 0.9f, Vector3.Up, 50f, 10f);
+    }
+}
