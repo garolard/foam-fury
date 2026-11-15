@@ -15,6 +15,8 @@ public partial class Zombie : CharacterBody3D
     float _repath, _groan, _attackCd, _windup = -1f, _stun, _rise, _hitArmKick;
     Vector3 _knock;
     float _yaw;
+    float _flinch, _headFlinch, _lean, _headTilt, _phase;
+    bool _lastExplosive;
 
     public void Setup(ZombieType type, int wave, bool rise)
     {
@@ -56,7 +58,10 @@ public partial class Zombie : CharacterBody3D
         AddChild(_model);
         _model.Play("run", _animSpeed * (float)GD.RandRange(0.9, 1.1), 0f);
         _model.Anim.Seek(GD.Randf() * 0.6f, true);
-        _model.Arms.Influence = 0.85f;
+        _model.Pose.ArmsWeight = 0.85f;
+        _lean = Type switch { ZombieType.Runner => 0.55f, ZombieType.Brute => 0.4f, _ => 0.25f } + (float)GD.RandRange(-0.08, 0.08);
+        _headTilt = (float)GD.RandRange(-0.35, 0.35);
+        _phase = (float)GD.RandRange(0, 10);
 
         _agent = new NavigationAgent3D
         {
@@ -185,14 +190,29 @@ public partial class Zombie : CharacterBody3D
         if (flatVel > 0.4f) _model.Play("run", _animSpeed * Mathf.Clamp(flatVel / Mathf.Max(_speed, 0.1f), 0.5f, 1.3f));
         else _model.Play("idle", 0.8f);
 
-        // arms: forward, raised during windup, thrust after hit
-        var fwd = _model.GlobalBasis.Z.Normalized();
+        // ---- procedural body language ----
         _hitArmKick = Mathf.Max(0, _hitArmKick - dt * 4f);
-        float lift = _windup >= 0 ? 0.9f : -0.1f - _hitArmKick * 0.6f;
-        float sway = Mathf.Sin(Time.GetTicksMsec() * 0.004f + GetInstanceId() % 10) * 0.12f;
-        var right = _model.GlobalBasis.X.Normalized();
-        _model.Arms.RightDir = (fwd + Vector3.Up * (lift + sway) - right * 0.05f).Normalized();
-        _model.Arms.LeftDir = (fwd + Vector3.Up * (lift - sway) + right * 0.05f).Normalized();
+        _flinch = Mathf.Max(0, _flinch - dt * 5f);
+        _headFlinch = Mathf.Max(0, _headFlinch - dt * 4f);
+        float time = Time.GetTicksMsec() * 0.001f + _phase;
+        float gait = time * (Type == ZombieType.Runner ? 9f : 4.5f);
+        float windupK = _windup >= 0 ? 1f - Mathf.Clamp(_windup / 0.45f, 0, 1) : 0f;
+        var pose = _model.Pose;
+        // arms: zombie reach, raised during wind-up, slammed down on strike
+        float lift = _windup >= 0 ? 0.2f + windupK * 1.1f : -0.08f - _hitArmKick * 0.7f;
+        float sway = Mathf.Sin(gait) * 0.12f;
+        pose.ArmsWeight = 0.85f;
+        pose.RightArm = new Vector3(-0.08f, lift + sway, 1f).Normalized();
+        pose.LeftArm = new Vector3(0.08f, lift - sway, 1f).Normalized();
+        pose.RightFore = pose.LeftFore = null;
+        // hunched lean, rear back during wind-up, lunge on strike, snap back when shot
+        pose.SpinePitch = _lean - windupK * 0.45f + _hitArmKick * 0.6f - _flinch * 0.7f;
+        pose.SpineRoll = Mathf.Sin(gait * 0.5f) * 0.1f;
+        pose.SpineYaw = Mathf.Sin(gait * 0.5f + 1f) * 0.08f;
+        pose.HeadPitch = 0.1f - _headFlinch * 1.1f + Mathf.Sin(time * 1.3f) * 0.08f;
+        pose.HeadRoll = _headTilt + Mathf.Sin(time * 0.9f) * 0.12f;
+        if (_rise <= 0)
+            _model.Position = new Vector3(_model.GlobalBasis.Z.X, 0, _model.GlobalBasis.Z.Z).Normalized() * _hitArmKick * 0.35f * _scale;
 
         if (GlobalPosition.Y < -20) Die(Vector3.Forward, false);
     }
@@ -216,6 +236,10 @@ public partial class Zombie : CharacterBody3D
         var kd = dir; kd.Y = 0;
         _knock += kd.Normalized() * knock * kres;
         if (Type != ZombieType.Brute) _stun = Mathf.Max(_stun, 0.12f);
+        float fl = Type == ZombieType.Brute ? 0.4f : 1f;
+        _flinch = Mathf.Min(1.2f, _flinch + (explosive ? 1f : 0.5f) * fl);
+        if (headshot) _headFlinch = 1f * fl;
+        _lastExplosive = explosive;
         Fx.Burst(pos, new Color(0.45f, 0.08f, 0.06f), headshot ? 14 : 7, 5f, 0.09f, 0.5f, -dir + Vector3.Up * 0.5f, 45f);
         Fx.Number(pos + Vector3.Up * 0.3f, Mathf.RoundToInt(dmg).ToString(),
             headshot ? new Color(1f, 0.85f, 0.2f) : Colors.White, headshot ? 1.4f : 1f);
@@ -230,28 +254,19 @@ public partial class Zombie : CharacterBody3D
         Dead = true;
         CollisionLayer = 0;
         CollisionMask = 0;
-        _model.Arms.Influence = 0.4f;
-        _model.Play("idle", 0f, 0.1f);
         Sfx.Play3D("zombie_die", GlobalPosition, -1f, 0.15f, Type == ZombieType.Brute ? 0.6f : Type == ZombieType.Runner ? 1.4f : 1f);
         Fx.Burst(GlobalPosition + Vector3.Up * Height * 0.5f, new Color(0.4f, 0.07f, 0.05f), 18, 7f, 0.14f, 0.8f);
         Main.Instance.OnZombieKilled(this, headshot);
 
-        // topple backwards (away from shot) and sink
-        var flat = new Vector3(dir.X, 0, dir.Z);
-        if (flat.LengthSquared() < 0.01f) flat = -_model.GlobalBasis.Z;
-        flat = flat.Normalized();
-        var axis = Vector3.Up.Cross(flat).Normalized();
-        var startQ = _model.Quaternion;
-        var endQ = new Quaternion(axis, Mathf.Pi / 2f) * startQ;
+        // procedural death: explosions launch, headshots crumple, everything else gets knocked flat
+        var kind = _lastExplosive ? DeathKind.Launch : headshot ? DeathKind.Crumple : GD.Randf() < 0.25f ? DeathKind.Crumple : DeathKind.FallBack;
+        float power = Type == ZombieType.Brute ? 0.5f : Type == ZombieType.Runner ? 1.4f : 1f;
+        float settle = _model.PlayDeath(kind, dir, power);
         var tw = CreateTween();
-        tw.TweenMethod(Callable.From<float>(t =>
-        {
-            _model.Quaternion = startQ.Slerp(endQ, t);
-            _model.Position = flat * t * 0.4f * _scale;
-        }), 0f, 1f, 0.45f).SetEase(Tween.EaseType.In).SetTrans(Tween.TransitionType.Quad);
-        tw.TweenCallback(Callable.From(() => Main.Instance.Rig?.AddTrauma(Type == ZombieType.Brute ? 0.35f : 0f)));
-        tw.TweenInterval(2.2f);
-        tw.TweenProperty(_model, "position:y", -1.2f, 1.2f);
+        tw.TweenInterval(settle);
+        tw.TweenCallback(Callable.From(() => { if (Type == ZombieType.Brute) Main.Instance.Rig?.AddTrauma(0.35f); }));
+        tw.TweenInterval(2.4f);
+        tw.TweenProperty(_model, "position:y", -1.5f, 1.4f).AsRelative();
         tw.TweenCallback(Callable.From(QueueFree));
     }
 }

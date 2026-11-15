@@ -9,8 +9,19 @@ public partial class Arena : MapBase
 
     protected override void Build()
     {
-        Environment(new Color(0.16f, 0.2f, 0.42f), new Color(0.98f, 0.58f, 0.38f), new Color(0.85f, 0.5f, 0.35f), 0.75f,
-            new Color(1f, 0.8f, 0.6f), 1.5f, new Vector3(-32f, -50f, 0), new Color(0.78f, 0.52f, 0.45f), 0.006f);
+        Environment(new Look
+        {
+            SkyTop = new Color(0.14f, 0.18f, 0.42f), Horizon = new Color(1f, 0.56f, 0.34f), Ground = new Color(0.35f, 0.22f, 0.2f),
+            Cloud = new Color(1f, 0.72f, 0.6f), Clouds = 0.42f, SunTint = new Color(1f, 0.7f, 0.4f), SunSize = 1.6f,
+            Sun = new Color(1f, 0.78f, 0.56f), SunEnergy = 1.8f, SunRot = new Vector3(-24f, -50f, 0), Ambient = 0.6f,
+            AmbientColor = new Color(0.62f, 0.6f, 0.75f),
+            Fog = new Color(0.85f, 0.6f, 0.5f), FogDensity = 0.002f,
+            VolDensity = 0.005f, VolAlbedo = new Color(1f, 0.85f, 0.75f), VolAniso = 0.75f,
+            Mist = new Color(0.95f, 0.75f, 0.6f), MistDensity = 0.12f, MistHeight = 1.2f,
+            CloudShadows = true,
+            Motes = new Color(1f, 0.75f, 0.45f), MoteSize = 0.04f, MoteCount = 180, MoteGravity = 0.08f, MoteGlow = 2.2f,
+            Tint = new Color(1f, 0.99f, 0.97f),
+        });
         GroundCollider();
         Plane(260, new Color(0.36f, 0.5f, 0.27f));
         Plane(Half * 2 + 10, new Color(0.72f, 0.55f, 0.4f), -0.01f);
@@ -19,7 +30,7 @@ public partial class Arena : MapBase
         BuildInterior();
         BuildOutside();
         foreach (var c in new[] { new Vector2(1, 1), new Vector2(-1, 1), new Vector2(1, -1), new Vector2(-1, -1) })
-            Light(new Vector3(c.X * 10f, 3.5f, c.Y * 10f), new Color(1f, 0.6f, 0.3f), 1.6f, 12f);
+            Light(new Vector3(c.X * 10f, 3.5f, c.Y * 10f), new Color(1f, 0.6f, 0.3f), 1.6f, 12f, shadows: true);
     }
 
     void BuildWalls()

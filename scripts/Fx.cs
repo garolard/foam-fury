@@ -42,7 +42,7 @@ public static class Fx
 
     public static void Flash(Vector3 pos, Color color, float energy = 3f, float range = 5f, float time = 0.06f)
     {
-        var l = new OmniLight3D { LightColor = color, LightEnergy = energy, OmniRange = range, ShadowEnabled = false };
+        var l = new OmniLight3D { LightColor = color, LightEnergy = energy, OmniRange = range, ShadowEnabled = false, LightVolumetricFogEnergy = 2.5f };
         World.AddChild(l);
         l.GlobalPosition = pos;
         var tw = l.CreateTween();

@@ -10,8 +10,19 @@ public partial class ForestMap : MapBase
 
     protected override void Build()
     {
-        Environment(new Color(0.28f, 0.48f, 0.85f), new Color(0.78f, 0.88f, 0.92f), new Color(0.45f, 0.6f, 0.45f), 0.85f,
-            new Color(1f, 0.95f, 0.85f), 1.35f, new Vector3(-50f, 35f, 0), new Color(0.62f, 0.75f, 0.72f), 0.012f, 0.45f);
+        Environment(new Look
+        {
+            SkyTop = new Color(0.22f, 0.42f, 0.82f), Horizon = new Color(0.78f, 0.88f, 0.93f), Ground = new Color(0.3f, 0.4f, 0.3f),
+            Cloud = Colors.White, Clouds = 0.55f, SunTint = new Color(1f, 0.95f, 0.8f),
+            Sun = new Color(1f, 0.94f, 0.8f), SunEnergy = 1.45f, SunRot = new Vector3(-38f, 35f, 0), Ambient = 0.6f, Glow = 0.45f,
+            AmbientColor = new Color(0.6f, 0.7f, 0.85f),
+            Fog = new Color(0.62f, 0.75f, 0.8f), FogDensity = 0.003f,
+            VolDensity = 0.006f, VolAlbedo = new Color(0.95f, 1f, 0.95f), VolAniso = 0.8f,
+            Mist = new Color(0.9f, 0.95f, 0.92f), MistDensity = 0.18f, MistHeight = 1.2f,
+            CloudShadows = true,
+            Motes = new Color(1f, 0.95f, 0.6f), MoteSize = 0.035f, MoteCount = 200, MoteGravity = -0.03f, MoteGlow = 1.6f,
+            Tint = new Color(1f, 1.02f, 0.98f),
+        });
         GroundCollider();
         Plane(260, new Color(0.34f, 0.55f, 0.26f));
 
@@ -48,7 +59,7 @@ public partial class ForestMap : MapBase
         }
         Flame(new Vector3(0, 0.35f, 0), new Color(1f, 0.5f, 0.15f), 0.35f);
         Flame(new Vector3(0.15f, 0.7f, 0.05f), new Color(1f, 0.75f, 0.25f), 0.2f);
-        Light(new Vector3(0, 1.2f, 0), new Color(1f, 0.55f, 0.2f), 3f, 10f, true, 1.2f);
+        Light(new Vector3(0, 1.2f, 0), new Color(1f, 0.55f, 0.2f), 3f, 10f, true, 1.2f, shadows: true);
         Box(new Vector3(0, 0.3f, 0), new Vector3(1.6f, 0.6f, 1.6f));
 
         Place("forest", "tent", new Vector3(-8f, 0, -6f), 30, 3.5f, true, true);

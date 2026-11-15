@@ -12,9 +12,18 @@ public partial class ArcadeMap : MapBase
 
     protected override void Build()
     {
-        Environment(new Color(0.03f, 0.02f, 0.08f), new Color(0.32f, 0.12f, 0.42f), new Color(0.2f, 0.08f, 0.3f), 0.6f,
-            new Color(0.55f, 0.6f, 1f), 0.45f, new Vector3(-48f, 30f, 0), new Color(0.3f, 0.12f, 0.4f), 0.01f, 1.1f, 1.1f,
-            new Color(0.45f, 0.4f, 0.65f));
+        Environment(new Look
+        {
+            SkyTop = new Color(0.02f, 0.01f, 0.06f), Horizon = new Color(0.3f, 0.1f, 0.42f), Ground = new Color(0.05f, 0.03f, 0.08f),
+            Cloud = new Color(0.22f, 0.12f, 0.32f), Clouds = 0.3f, Stars = 1f, SunTint = new Color(0.65f, 0.7f, 1f), SunSize = 2.5f,
+            Sun = new Color(0.55f, 0.6f, 1f), SunEnergy = 0.45f, SunRot = new Vector3(-48f, 30f, 0),
+            Ambient = 0.55f, AmbientColor = new Color(0.45f, 0.4f, 0.65f), Glow = 1.1f, Exposure = 1.1f,
+            Fog = new Color(0.3f, 0.12f, 0.4f), FogDensity = 0.005f,
+            VolDensity = 0.022f, VolAlbedo = new Color(0.75f, 0.55f, 1f), VolAniso = 0.5f,
+            Mist = new Color(0.65f, 0.45f, 0.95f), MistDensity = 0.45f, MistHeight = 1.1f, MistGlow = new Color(0.04f, 0.01f, 0.06f),
+            Motes = new Color(0.5f, 0.9f, 1f), MoteSize = 0.03f, MoteCount = 220, MoteGravity = 0.02f, MoteGlow = 3f,
+            Tint = new Color(1f, 0.97f, 1.05f),
+        });
         GroundCollider();
         Plane(260, new Color(0.13f, 0.12f, 0.15f));                     // parking lot asphalt
         Tiles("arcade", "floor", "floor", Half, 0f);
@@ -69,7 +78,7 @@ public partial class ArcadeMap : MapBase
                 Place("arcade", "arcade-machine", new Vector3(x, 0, -6.2f), 0, 2.6f, true, true);
                 Place("arcade", "arcade-machine", new Vector3(x, 0, -7.9f), 180, 2.6f, true, true);
             }
-            Light(new Vector3(sx * 6f, 3.2f, -7f), sx < 0 ? Magenta : Cyan, 2.2f, 8f, true, 0.3f);
+            Light(new Vector3(sx * 6f, 3.2f, -7f), sx < 0 ? Magenta : Cyan, 2.6f, 9f, true, 0.3f, shadows: true);
         }
         // pinball row, far north
         for (int k = -3; k <= 3; k++)
@@ -81,7 +90,7 @@ public partial class ArcadeMap : MapBase
                 Place("arcade", "claw-machine", new Vector3(sx * 15.6f, 0, -3f + k * 2.2f), sx * -90f, 2.6f, true, true);
             Place("arcade", "air-hockey", new Vector3(sx * 8f, 0, 2.5f), 90, 2.6f, true, true);
             Place("arcade", "dance-machine", new Vector3(sx * 11f, 0, 10.5f), sx * -60f, 2.6f, true, true);
-            Light(new Vector3(sx * 12f, 3.2f, 0f), sx < 0 ? Yellow : Lime, 2f, 9f, true, 0.3f);
+            Light(new Vector3(sx * 12f, 3.2f, 0f), sx < 0 ? Yellow : Lime, 2.4f, 10f, true, 0.3f, shadows: true);
             Light(new Vector3(sx * 9f, 3.2f, 11f), sx < 0 ? Cyan : Magenta, 2f, 9f, true, 0.3f);
         }
         // prize counter, north-west corner

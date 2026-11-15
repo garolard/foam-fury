@@ -36,6 +36,8 @@ public partial class Projectile : Node3D
         var tr = new MeshInstance3D { Mesh = _tracerMesh, MaterialOverride = Fx.Glow(_color), CastShadow = GeometryInstance3D.ShadowCastingSetting.Off };
         tr.Position = new Vector3(0, -0.6f, 0);
         AddChild(tr);
+        // each dart carries a little light so tracers paint the walls and zombies as they fly
+        AddChild(new OmniLight3D { LightColor = _color, LightEnergy = 1.6f, OmniRange = 2.6f, ShadowEnabled = false, LightVolumetricFogEnergy = 0.6f });
     }
 
     public override void _PhysicsProcess(double delta)

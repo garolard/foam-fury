@@ -56,6 +56,7 @@ public partial class Main : Node3D
         _sel = GameData.SelectedCharacter;
         _map = GameData.SelectedMap;
         if (OS.GetEnvironment("FF_MAP") is { Length: > 0 } fm) GameData.SelectedMap = _map = int.Parse(fm);
+        BuildPostProcess();
         LoadMap();
 
         var music = (AudioStreamWav)Assets.Audio("music");
@@ -80,12 +81,26 @@ public partial class Main : Node3D
         else ShowMenu();
     }
 
+    ShaderMaterial _post;
+
+    void BuildPostProcess()
+    {
+        var layer = new CanvasLayer { Layer = 1 };
+        AddChild(layer);
+        _post = new ShaderMaterial { Shader = GD.Load<Shader>("res://shaders/post.gdshader") };
+        var rect = new ColorRect { Material = _post, MouseFilter = Control.MouseFilterEnum.Ignore };
+        rect.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        layer.AddChild(rect);
+    }
+
     void LoadMap()
     {
         if (Arena != null) { World.RemoveChild(Arena); Arena.QueueFree(); }
         Arena = MapBase.Create(_map);
         World.AddChild(Arena);
         _best = GameData.LoadBest(_map);
+        _post.SetShaderParameter("tint", Arena.Style.Tint);
+        _post.SetShaderParameter("lift", Arena.Style.Lift);
     }
 
     // ------------------------------------------------------------------ MENU
@@ -202,7 +217,8 @@ public partial class Main : Node3D
             _map = (_map + md + MapBase.Names.Length) % MapBase.Names.Length;
             GameData.SelectedMap = _map;
             Sfx.Play("ui_move");
-            LoadMap();
+            BuildPostProcess();
+        LoadMap();
             UpdatePreview();
             RefreshCharCard();
         }
@@ -412,6 +428,38 @@ public partial class Main : Node3D
         return box;
     }
 
+    int _animStep;
+    readonly List<Zombie> _testZ = new();
+    void AnimTest()
+    {
+        _breakTimer = 999f;
+        if (_animStep == 0)
+        {
+            _animStep = 1;
+            for (int i = 0; i < 3; i++)
+            {
+                var z = new Zombie();
+                z.Setup(i == 2 ? ZombieType.Brute : ZombieType.Walker, 1, false);
+                World.AddChild(z);
+                z.GlobalPosition = new Vector3(3f + i * 3f, 0.05f, 2.5f);
+                Zombies.Add(z); _testZ.Add(z);
+            }
+            Rig.Yaw = 0; Rig.Pitch = -0.05f;
+            var cam = new Camera3D { Fov = 50 };
+            World.AddChild(cam);
+            bool pc = OS.GetEnvironment("FF_PCAM") == "1";
+            cam.GlobalPosition = pc ? new Vector3(-2.6f, 1.9f, 4.2f) : new Vector3(6f, 4.5f, 10.5f);
+            cam.LookAt(pc ? new Vector3(0, 1.3f, 6f) : new Vector3(6f, 0.6f, 2.5f), Vector3.Up);
+            cam.MakeCurrent();
+        }
+        Input.ActionPress("aim");
+        float t = _time;
+        if (_animStep == 1 && t > 2.0f) { _animStep = 2; _testZ[0].TakeDamage(999, _testZ[0].GlobalPosition + Vector3.Up, Vector3.Forward, false); }
+        if (_animStep == 2 && t > 2.1f) { _animStep = 3; _testZ[1].TakeDamage(999, _testZ[1].GlobalPosition + Vector3.Up * 2, Vector3.Forward, true); }
+        if (_animStep == 3 && t > 2.2f) { _animStep = 4; _testZ[2].TakeDamage(9999, _testZ[2].GlobalPosition + Vector3.Up, new Vector3(0.3f, 0, -1), false, 10, true); }
+        if (t > 1.0f && Engine.GetProcessFrames() % 20 == 0) Input.ActionPress("fire"); else Input.ActionRelease("fire");
+    }
+
     void AutoPlay()
     {
         Zombie best = null; float bd = 1e9f;
@@ -454,6 +502,7 @@ public partial class Main : Node3D
             if (_shotIdx >= _shotTimes.Count && OS.GetEnvironment("FF_QUIT") == "1") GetTree().Quit();
         }
         if (_auto && Mode == State.Playing) AutoPlay();
+        if (OS.GetEnvironment("FF_ANIMTEST") == "1" && Mode == State.Playing) AnimTest();
 
         if (Mode == State.Menu) { MenuProcess(dt); return; }
         if (Input.IsActionJustPressed("pause") && (Mode == State.Playing || Mode == State.Paused)) { TogglePause(); return; }

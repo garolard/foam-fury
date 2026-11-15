@@ -21,6 +21,8 @@ public partial class Player : CharacterBody3D
     float _muzzleDist;
     float _fireCd, _reloadTimer, _lastShot = 10f, _armBlend, _yaw, _invuln, _sinceHurt = 10f;
     float _dashTime, _dashCd, _bloom, _snapT = -1f;
+    float _kick, _hurtFlinch, _throwT = -1f, _dashBuffer;
+    const float DashCooldown = 0.6f;
     Vector3 _dashDir, _knock;
     float _snapYaw0, _snapPitch0, _snapYaw1, _snapPitch1;
     bool _wasAim;
@@ -139,21 +141,28 @@ public partial class Player : CharacterBody3D
         float speed = Def.Speed * (aiming ? 0.6f : 1f) * (ReloadProgress >= 0 ? 0.85f : 1f);
 
         var vel = Velocity;
-        if (Input.IsActionJustPressed("dash") && _dashCd <= 0)
+        // buffer the press so tapping B slightly early (still on cooldown) isn't swallowed
+        if (Input.IsActionJustPressed("dash")) _dashBuffer = 0.35f;
+        _dashBuffer -= dt;
+        if (_dashBuffer > 0 && _dashCd <= 0)
         {
+            _dashBuffer = 0;
+            _rig.FovKick = 1f;
+            InputSetup.Rumble(0.35f, 0.1f, 0.12f);
             _dashDir = move.LengthSquared() > 0.01f ? move.Normalized() : -camBasis.Z;
-            _dashTime = 0.2f * Def.DashMult;
-            _dashCd = 0.9f;
+            _dashTime = 0.22f * Def.DashMult;
+            _dashCd = DashCooldown;
             _invuln = Mathf.Max(_invuln, 0.3f);
             Sfx.Play("dash", -2f);
             Fx.SpawnDust(GlobalPosition);
         }
-        DashReady = Mathf.Clamp(1f - _dashCd / 0.9f, 0, 1);
+        DashReady = Mathf.Clamp(1f - _dashCd / DashCooldown, 0, 1);
         Vector3 hv;
         if (_dashTime > 0)
         {
             _dashTime -= dt;
-            hv = _dashDir * 17f;
+            hv = _dashDir * 19f;
+            if (GD.Randf() < 0.5f) Fx.Burst(GlobalPosition + Vector3.Up * 0.1f, new Color(0.55f, 0.45f, 0.35f), 3, 2f, 0.12f, 0.4f, Vector3.Up, 40f, 6f);
         }
         else
         {
@@ -224,25 +233,74 @@ public partial class Player : CharacterBody3D
     public override void _Process(double delta)
     {
         float dt = (float)delta;
-        bool armsUp = !Dead && (Input.IsActionPressed("aim") || _lastShot < 0.8f);
+        if (Dead) return; // the death animation owns the pose now
+        bool armsUp = Input.IsActionPressed("aim") || _lastShot < 0.8f || ReloadProgress >= 0;
         _armBlend = Mathf.MoveToward(_armBlend, armsUp ? 1f : 0f, dt * 8f);
-        Model.Arms.Influence = Mathf.SmoothStep(0, 1, _armBlend) * 0.95f;
+        float blend = Mathf.SmoothStep(0, 1, _armBlend);
+        _kick *= Mathf.Exp(-14f * dt);
+        _hurtFlinch = Mathf.Max(0, _hurtFlinch - dt * 4f);
+        if (_throwT >= 0) { _throwT += dt / 0.42f; if (_throwT >= 1) _throwT = -1; }
 
         var muzzleBase = Model.RightHand.GlobalPosition;
         var aimDir = (AimPoint - muzzleBase).Normalized();
         var fwd = Model.GlobalBasis.Z.Normalized();
-        var right = Model.GlobalBasis.X.Normalized();
+        var right = -Model.GlobalBasis.X.Normalized();   // model's right side is -X
         // never point arms backwards relative to body
         if (aimDir.Dot(fwd) < 0.2f) aimDir = (aimDir + fwd * 0.8f).Normalized();
-        Model.Arms.RightDir = aimDir;
-        Model.Arms.LeftDir = (aimDir - right * 0.55f).Normalized(); // reaches across to support the blaster
+        // recoil: muzzle climbs, then settles
+        var kicked = (aimDir + Vector3.Up * _kick * 0.16f).Normalized();
+
+        var pose = Model.Pose;
+        var aimModel = Model.ToModel(kicked);
+        pose.ArmsWeight = blend * 0.95f;
+        pose.RightArm = aimModel;
+        pose.RightFore = null;
+        pose.LeftArm = Model.ToModel(kicked + right * 0.55f);   // reach across to support the blaster
+        pose.LeftFore = null;
+
+        // reload: tip the blaster down and slap the magazine with the off hand
+        float reload = ReloadProgress >= 0 ? Mathf.Sin(Mathf.Clamp(ReloadProgress, 0, 1) * Mathf.Pi) : 0f;
+        if (reload > 0)
+        {
+            var low = (fwd - Vector3.Up * 0.75f + right * 0.15f).Normalized();
+            pose.RightArm = Model.ToModel(aimDir.Slerp(low, reload * 0.8f));
+            float slap = Mathf.Sin(ReloadProgress * Mathf.Pi * 3f);
+            pose.LeftArm = Model.ToModel((low + right * 0.7f + Vector3.Up * (0.15f * slap)).Normalized());
+        }
+
+        // grenade throw: wind up overhead, then whip forward
+        if (_throwT >= 0)
+        {
+            float t = _throwT;
+            var back = new Vector3(-0.35f, 0.9f, -0.45f).Normalized();
+            var front = new Vector3(-0.15f, 0.35f, 1f).Normalized();
+            pose.ArmsWeight = 1f;
+            pose.RightArm = t < 0.45f ? Vector3.Down.Slerp(back, Mathf.SmoothStep(0, 1, t / 0.45f)) : back.Slerp(front, Mathf.SmoothStep(0, 1, (t - 0.45f) / 0.55f));
+            pose.RightFore = null;
+            pose.LeftArm = new Vector3(0.35f, 0.1f, 0.95f).Normalized();
+        }
+
+        // torso follows the aim pitch, rocks back with recoil, leans into a run, flinches when hit
+        float aimPitch = Mathf.Asin(Mathf.Clamp(Model.ToModel(aimDir).Y, -1, 1));
+        float run = Mathf.Clamp(new Vector3(Velocity.X, 0, Velocity.Z).Length() / Def.Speed, 0, 1);
+        float throwLean = _throwT >= 0 ? (_throwT < 0.45f ? -0.25f : 0.35f) : 0f;
+        pose.SpinePitch = -aimPitch * 0.45f * blend - _kick * 0.18f + run * 0.12f * (1 - blend) - _hurtFlinch * 0.5f + throwLean;
+        pose.SpineYaw = _throwT >= 0 ? (_throwT < 0.45f ? 0.4f : -0.3f) : -0.12f * blend; // blade the body slightly behind the blaster
+        pose.HeadPitch = aimPitch * 0.25f * blend - _hurtFlinch * 0.6f;
+        pose.HeadYaw = 0.12f * blend;
+        pose.HeadRoll = 0;
 
         var idleDir = (fwd - Vector3.Up * 0.25f).Normalized();
-        var gunDir = idleDir.Slerp(aimDir, Mathf.SmoothStep(0, 1, _armBlend));
+        var gunDir = idleDir.Slerp(kicked, blend);
         float s = 0.7f * Weapon.Scale;
         if (gunDir.LengthSquared() > 0.01f)
-            _gun.GlobalTransform = new Transform3D(Basis.LookingAt(gunDir, Vector3.Up).Scaled(Vector3.One * s), muzzleBase + gunDir * 0.05f);
-        _gun.Visible = !Dead || _gun.Visible;
+        {
+            var basis = Basis.LookingAt(gunDir, Vector3.Up);
+            // recoil tilts the muzzle up; reload rolls the blaster over
+            basis = new Basis(basis.X.Normalized(), _kick * 0.35f) * basis;
+            if (reload > 0) basis = new Basis(gunDir, reload * 1.1f) * new Basis(basis.X.Normalized(), -reload * 0.5f) * basis;
+            _gun.GlobalTransform = new Transform3D(basis.Scaled(Vector3.One * s), muzzleBase + gunDir * (0.05f - _kick * 0.07f));
+        }
     }
 
     Vector3 MuzzlePos => _gun.GlobalPosition - _gun.GlobalBasis.Z.Normalized() * _muzzleDist + _gun.GlobalBasis.Y.Normalized() * 0.04f;
@@ -351,6 +409,7 @@ public partial class Player : CharacterBody3D
         _rig.Recoil += Mathf.DegToRad(w.Recoil);
         _rig.AddTrauma(w.Pellets > 1 ? 0.25f : w.Recoil * 0.04f);
         _bloom = Mathf.Min(_bloom + w.Recoil * 0.6f, 6f);
+        _kick = Mathf.Min(1.6f, _kick + 0.35f + w.Recoil * 0.18f);
         InputSetup.Rumble(0.25f + w.Recoil * 0.06f, w.Pellets > 1 ? 0.6f : 0.1f, 0.08f);
         if (Mag[WeaponIndex] == 0) StartReload();
     }
@@ -373,6 +432,7 @@ public partial class Player : CharacterBody3D
         var pos = GlobalPosition + Vector3.Up * 1.6f + new Vector3(dir.X, 0, dir.Z).Normalized() * 0.6f;
         Grenade.Throw(pos, dir * 15f + Vector3.Up * 4.5f + new Vector3(Velocity.X, 0, Velocity.Z) * 0.5f, Def.BlastMult);
         Sfx.Play("throw");
+        _throwT = 0f;
         _lastShot = 0.3f;
     }
 
@@ -384,6 +444,7 @@ public partial class Player : CharacterBody3D
         _sinceHurt = 0;
         _knock += dir * knock;
         Model.Flash(0.8f);
+        _hurtFlinch = 1f;
         _rig.AddTrauma(0.45f);
         InputSetup.Rumble(0.6f, 0.8f, 0.25f);
         Sfx.Play("hurt", 0f, 0.1f);
@@ -394,16 +455,11 @@ public partial class Player : CharacterBody3D
     void Die(Vector3 dir)
     {
         Dead = true;
-        Model.Arms.Influence = 0;
-        Model.Play("idle", 0f);
         _gun.Visible = false;
-        var axis = Vector3.Up.Cross(dir.Normalized()).Normalized();
-        if (axis.LengthSquared() < 0.1f) axis = Vector3.Right;
-        var start = Model.Quaternion;
-        var end = new Quaternion(axis, Mathf.Pi / 2f) * start;
-        var tw = CreateTween();
-        tw.TweenMethod(Callable.From<float>(t => Model.Quaternion = start.Slerp(end, t)), 0f, 1f, 0.6f)
-          .SetEase(Tween.EaseType.In).SetTrans(Tween.TransitionType.Quad);
+        // hit from behind -> pitch forward onto the face, otherwise get knocked flat on the back
+        var flat = new Vector3(dir.X, 0, dir.Z).Normalized();
+        bool fromBehind = flat.Dot(Model.GlobalBasis.Z.Normalized()) > 0.3f;
+        Model.PlayDeath(fromBehind ? DeathKind.Crumple : DeathKind.FallBack, dir);
         InputSetup.Rumble(1f, 1f, 0.8f);
         Main.Instance.OnPlayerDied();
     }

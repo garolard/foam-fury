@@ -9,6 +9,7 @@ public partial class CameraRig : Node3D
     public SpringArm3D Arm;
     public bool Aiming;
     public float Recoil;
+    public float FovKick;   // 0..1 punch-out on dash
 
     Node3D _pitchNode;
     float _trauma, _t;
@@ -54,7 +55,8 @@ public partial class CameraRig : Node3D
         float a = Mathf.SmoothStep(0, 1, _aimBlend);
         Arm.SpringLength = Mathf.Lerp(4.0f, 2.6f, a);
         Arm.Position = new Vector3(Mathf.Lerp(0.9f, 1.05f, a), Mathf.Lerp(0f, 0.15f, a), 0);
-        Camera.Fov = Mathf.Lerp(72f, 55f, a);
+        FovKick = Mathf.MoveToward(FovKick, 0f, dt * 3.5f);
+        Camera.Fov = Mathf.Lerp(72f, 55f, a) + Mathf.SmoothStep(0, 1, FovKick) * 9f;
 
         _trauma = Mathf.Max(0, _trauma - dt * 1.6f);
         float s = _trauma * _trauma;
