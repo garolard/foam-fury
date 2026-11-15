@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://dldii3gwwqatk"
 path.s3tc="res://.godot/imported/colormap.png-4d23d99d2a12aa4cde8a003d52f8f11e.s3tc.ctex"
+path.etc2="res://.godot/imported/colormap.png-4d23d99d2a12aa4cde8a003d52f8f11e.etc2.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://assets/kenney_mini-forest_1/Models/GLB format/Textures/colormap.png"
-dest_files=["res://.godot/imported/colormap.png-4d23d99d2a12aa4cde8a003d52f8f11e.s3tc.ctex"]
+dest_files=["res://.godot/imported/colormap.png-4d23d99d2a12aa4cde8a003d52f8f11e.s3tc.ctex", "res://.godot/imported/colormap.png-4d23d99d2a12aa4cde8a003d52f8f11e.etc2.ctex"]
 
 [params]
 

@@ -16,11 +16,19 @@ public abstract partial class MapBase : NavigationRegion3D
     public virtual float RiseChance(int wave) => wave >= 3 ? 0.28f : 0f;
     protected virtual float NavExtent => 45f;
 
+    /// Full: playable. Backdrop: atmosphere only (menu background, no physics/navmesh).
+    /// Miniature: bare geometry for the stage-select diorama (no environment, lights or physics).
+    public enum BuildMode { Full, Backdrop, Miniature }
+    public BuildMode Detail = BuildMode.Full;
+    /// Miniature maps are clipped to this half-extent so they fit their plinth.
+    public const float MiniExtent = 27f;
+
     protected abstract void Build();
 
     public override void _Ready()
     {
         Build();
+        if (Detail != BuildMode.Full) return;
         NavigationMesh = new NavigationMesh
         {
             CellSize = 0.25f, CellHeight = 0.25f,
@@ -57,12 +65,14 @@ public abstract partial class MapBase : NavigationRegion3D
         m.Position = pos;
         m.Rotation = new Vector3(0, Mathf.DegToRad(rotY), 0);
         m.Scale = Vector3.One * scale;
-        if (collide) Assets.AddCollision(m, 1, convex);
+        if (collide && Detail == BuildMode.Full) Assets.AddCollision(m, 1, convex);
+        if (Detail == BuildMode.Miniature && (Mathf.Abs(pos.X) > MiniExtent || Mathf.Abs(pos.Z) > MiniExtent)) m.Visible = false;
         return m;
     }
 
     protected StaticBody3D Box(Vector3 center, Vector3 size, float rotY = 0, uint layer = 1)
     {
+        if (Detail != BuildMode.Full) return null;
         var b = new StaticBody3D { CollisionLayer = layer, CollisionMask = 0 };
         b.AddChild(new CollisionShape3D { Shape = new BoxShape3D { Size = size } });
         AddChild(b);
@@ -75,6 +85,7 @@ public abstract partial class MapBase : NavigationRegion3D
 
     protected MeshInstance3D Plane(float size, Color color, float y = -0.02f)
     {
+        if (Detail == BuildMode.Miniature) size = Mathf.Min(size, MiniExtent * 2f);
         var m = new MeshInstance3D
         {
             Mesh = new PlaneMesh { Size = new Vector2(size, size) },
@@ -102,6 +113,8 @@ public abstract partial class MapBase : NavigationRegion3D
         var l = new OmniLight3D { LightColor = color, LightEnergy = energy, OmniRange = range, ShadowEnabled = shadows, Position = pos,
             LightVolumetricFogEnergy = 2f, ShadowBlur = 1.5f };
         AddChild(l);
+        // light range ignores node scale, so a miniature's lamps would flood the whole showcase
+        if (Detail == BuildMode.Miniature) { l.Visible = false; return l; }
         if (flicker) _flicker.Add((l, energy, flickerSpeed));
         return l;
     }
@@ -166,6 +179,7 @@ public abstract partial class MapBase : NavigationRegion3D
     protected void Environment(Look l)
     {
         Style = l;
+        if (Detail == BuildMode.Miniature) return;
         var skyMat = new ShaderMaterial { Shader = GD.Load<Shader>("res://shaders/sky.gdshader") };
         skyMat.SetShaderParameter("top_color", l.SkyTop);
         skyMat.SetShaderParameter("horizon_color", l.Horizon);

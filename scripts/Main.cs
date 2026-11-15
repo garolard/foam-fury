@@ -26,13 +26,9 @@ public partial class Main : Node3D
     bool _waveActive;
 
     // menu
-    CanvasLayer _menuLayer;
+    MainMenu _menu;
     Camera3D _menuCam;
-    CharacterModel _preview;
-    Node3D _previewGun;
-    Label _charName, _charTitle, _charPerk, _charStats;
-    int _sel, _map;
-    Label _mapName, _mapSub, _bestLabel;
+    int _map;
     Control _pausePanel, _overPanel;
     AudioStreamPlayer _music;
     float _menuT;
@@ -53,11 +49,13 @@ public partial class Main : Node3D
 
         World = new Node3D { Name = "World", ProcessMode = ProcessModeEnum.Pausable };
         AddChild(World);
-        _sel = GameData.SelectedCharacter;
         _map = GameData.SelectedMap;
         if (OS.GetEnvironment("FF_MAP") is { Length: > 0 } fm) GameData.SelectedMap = _map = int.Parse(fm);
+        if (OS.GetEnvironment("FF_CHAR") is { Length: > 0 } fc) GameData.SelectedCharacter = int.Parse(fc);
+        if (OS.GetEnvironment("FF_PLAY") == "1") GameData.SkipMenu = true;
         BuildPostProcess();
-        LoadMap();
+        // the menu only needs the map as scenery; the playable version is built when a run starts
+        LoadMap(GameData.SkipMenu ? MapBase.BuildMode.Full : MapBase.BuildMode.Backdrop);
 
         var music = (AudioStreamWav)Assets.Audio("music");
         music.LoopMode = AudioStreamWav.LoopModeEnum.Forward;
@@ -74,8 +72,6 @@ public partial class Main : Node3D
             foreach (var t in (OS.GetEnvironment("FF_SHOT_T") is { Length: > 0 } ts ? ts : "3").Split(',')) _shotTimes.Add(double.Parse(t, System.Globalization.CultureInfo.InvariantCulture));
         }
         _auto = OS.GetEnvironment("FF_AUTO") == "1";
-        if (OS.GetEnvironment("FF_CHAR") is { Length: > 0 } fc) GameData.SelectedCharacter = _sel = int.Parse(fc);
-        if (OS.GetEnvironment("FF_PLAY") == "1") GameData.SkipMenu = true;
 
         if (GameData.SkipMenu) StartGame();
         else ShowMenu();
@@ -93,10 +89,11 @@ public partial class Main : Node3D
         layer.AddChild(rect);
     }
 
-    void LoadMap()
+    void LoadMap(MapBase.BuildMode detail = MapBase.BuildMode.Full)
     {
         if (Arena != null) { World.RemoveChild(Arena); Arena.QueueFree(); }
         Arena = MapBase.Create(_map);
+        Arena.Detail = detail;
         World.AddChild(Arena);
         _best = GameData.LoadBest(_map);
         _post.SetShaderParameter("tint", Arena.Style.Tint);
@@ -108,137 +105,31 @@ public partial class Main : Node3D
     {
         Mode = State.Menu;
         Input.MouseMode = Input.MouseModeEnum.Visible;
-        _menuCam = new Camera3D { Fov = 55, Current = true };
+        _menuCam = new Camera3D { Fov = 50, Current = true };
         World.AddChild(_menuCam);
-        UpdatePreview();
-
-        _menuLayer = new CanvasLayer { Layer = 10 };
-        AddChild(_menuLayer);
-        var root = new Control();
-        root.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-        _menuLayer.AddChild(root);
-        var shade = new ColorRect { Color = new Color(0, 0, 0, 0), MouseFilter = Control.MouseFilterEnum.Ignore };
-        shade.SetAnchorsPreset(Control.LayoutPreset.FullRect);
-        var grad = new GradientTexture2D { Gradient = new Gradient(), FillFrom = new Vector2(0, 0), FillTo = new Vector2(1, 0) };
-        grad.Gradient.SetColor(0, new Color(0.05f, 0.03f, 0.08f, 0.85f));
-        grad.Gradient.SetColor(1, new Color(0.05f, 0.03f, 0.08f, 0f));
-        var gr = new TextureRect { Texture = grad, ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize, StretchMode = TextureRect.StretchModeEnum.Scale, MouseFilter = Control.MouseFilterEnum.Ignore };
-        gr.AnchorRight = 0.6f; gr.AnchorBottom = 1;
-        root.AddChild(gr);
-
-        var col = new VBoxContainer();
-        root.AddChild(col);
-        col.AnchorLeft = 0; col.AnchorTop = 0; col.AnchorBottom = 1;
-        col.OffsetLeft = 70; col.OffsetTop = 60; col.OffsetRight = 760; col.OffsetBottom = -50;
-        col.AddThemeConstantOverride("separation", 4);
-        col.AddChild(Hud.MakeLabel("FOAM FURY", 110, new Color(1f, 0.8f, 0.3f), 22));
-        col.AddChild(Hud.MakeLabel("ZOMBIE  ARENA", 40, new Color(0.65f, 1f, 0.55f), 10));
-        col.AddChild(new Control { CustomMinimumSize = new Vector2(0, 30) });
-        col.AddChild(Hud.MakeLabel("CHOOSE YOUR SURVIVOR", 24, new Color(0.85f, 0.85f, 0.9f), 6));
-        _charName = Hud.MakeLabel("", 72, Colors.White, 14);
-        _charTitle = Hud.MakeLabel("", 30, new Color(1f, 0.75f, 0.4f), 8);
-        _charPerk = Hud.MakeLabel("", 26, new Color(0.6f, 1f, 0.6f), 8);
-        _charStats = Hud.MakeLabel("", 22, new Color(0.85f, 0.85f, 0.9f), 6);
-        col.AddChild(_charName); col.AddChild(_charTitle); col.AddChild(_charPerk); col.AddChild(_charStats);
-        col.AddChild(new Control { CustomMinimumSize = new Vector2(0, 26) });
-        col.AddChild(Hud.MakeLabel("MAP", 24, new Color(0.85f, 0.85f, 0.9f), 6));
-        _mapName = Hud.MakeLabel("", 44, new Color(0.6f, 0.9f, 1f), 10);
-        _mapSub = Hud.MakeLabel("", 22, new Color(0.85f, 0.85f, 0.9f), 6);
-        col.AddChild(_mapName); col.AddChild(_mapSub);
-        col.AddChild(new Control { SizeFlagsVertical = Control.SizeFlags.ExpandFill });
-        var start = Hud.MakeLabel("PRESS  (A)  TO START", 40, Colors.White, 12);
-        start.Name = "Start";
-        col.AddChild(start);
-        var tw = start.CreateTween().SetLoops();
-        tw.TweenProperty(start, "modulate:a", 0.35f, 0.7f);
-        tw.TweenProperty(start, "modulate:a", 1f, 0.7f);
-        _bestLabel = Hud.MakeLabel("", 22, new Color(1f, 0.9f, 0.5f), 6);
-        col.AddChild(_bestLabel);
-
-        var help = new VBoxContainer();
-        root.AddChild(help);
-        help.AnchorLeft = 1; help.AnchorRight = 1; help.AnchorTop = 1; help.AnchorBottom = 1;
-        help.OffsetLeft = -520; help.OffsetRight = -50; help.OffsetTop = -330; help.OffsetBottom = -40;
-        help.AddChild(Hud.MakeLabel("CONTROLS", 26, new Color(1f, 0.8f, 0.3f), 8, HorizontalAlignment.Right));
-        foreach (var line in new[] {
-            "MENU:  LEFT/RIGHT survivor   UP/DOWN map",
-            "LS  move     RS  look", "RT  fire     LT  aim (snaps to target)", "A  jump     B  dash", "X  reload     Y  grenade",
-            "LB / RB  switch blaster", "D-PAD  pick blaster     START  pause", "keyboard + mouse also supported" })
-            help.AddChild(Hud.MakeLabel(line, 19, new Color(0.9f, 0.9f, 0.95f), 6, HorizontalAlignment.Right));
-
-        RefreshCharCard();
-    }
-
-    void UpdatePreview()
-    {
-        _preview?.QueueFree();
-        _previewGun?.QueueFree();
-        _preview = new CharacterModel(GameData.Characters[_sel].Skin, 0.62f);
-        World.AddChild(_preview);
-        _preview.Position = new Vector3(0, 0, 7.5f);
-        _preview.Play("idle", 1f, 0f);
-        _preview.Flash(0.6f);
-    }
-
-    void RefreshCharCard()
-    {
-        var c = GameData.Characters[_sel];
-        _charName.Text = $"◀  {c.Name}  ▶";
-        _charTitle.Text = c.Title.ToUpper();
-        _charPerk.Text = c.Perk;
-        _charStats.Text = $"HEALTH {c.MaxHp}     SPEED {c.Speed:0.0}     GRENADES {c.Grenades}";
-        _mapName.Text = $"▲  {Arena.Title}  ▼";
-        _mapSub.Text = Arena.Subtitle;
-        _bestLabel.Text = $"BEST SCORE ON THIS MAP  {_best:N0}";
-        var pop = _charName.CreateTween();
-        _charName.PivotOffset = new Vector2(0, 40);
-        _charName.Scale = Vector2.One * 1.08f;
-        pop.TweenProperty(_charName, "scale", Vector2.One, 0.15f);
+        _menu = new MainMenu();
+        AddChild(_menu);
+        _menu.BackdropChanged += m => { _map = m; LoadMap(MapBase.BuildMode.Backdrop); };
+        _menu.Finished += (c, m) =>
+        {
+            GameData.SelectedCharacter = c;
+            GameData.SelectedMap = _map = m;
+            _menu.QueueFree(); _menu = null;
+            _menuCam.QueueFree(); _menuCam = null;
+            LoadMap();
+            StartGame();
+        };
+        int start = OS.GetEnvironment("FF_MENU") is { Length: > 0 } fs ? int.Parse(fs) : GameData.MenuStart;
+        _menu.Open((MainMenu.Screen)start);
     }
 
     void MenuProcess(float dt)
     {
+        // slow high orbit over the selected stage
         _menuT += dt;
-        // slow orbit framing the selected survivor with the arena behind
-        float a = 0.35f + Mathf.Sin(_menuT * 0.15f) * 0.25f;
-        var target = new Vector3(0, 1.2f, 7.5f);
-        _menuCam.GlobalPosition = target + new Vector3(Mathf.Sin(a) * 4.6f, 0.5f, Mathf.Cos(a) * 4.6f);
-        _menuCam.LookAt(target + new Vector3(-1.4f, 0, 0) .Rotated(Vector3.Up, a), Vector3.Up);
-        if (_preview != null) _preview.Rotation = new Vector3(0, a + Mathf.Sin(_menuT * 0.8f) * 0.25f, 0);
-
-        int d = 0;
-        if (Input.IsActionJustPressed("menu_left") || Input.IsActionJustPressed("weapon_prev")) d = -1;
-        if (Input.IsActionJustPressed("menu_right") || Input.IsActionJustPressed("weapon_next")) d = 1;
-        int md = 0;
-        if (Input.IsActionJustPressed("menu_up")) md = -1;
-        if (Input.IsActionJustPressed("menu_down")) md = 1;
-        if (md != 0)
-        {
-            _map = (_map + md + MapBase.Names.Length) % MapBase.Names.Length;
-            GameData.SelectedMap = _map;
-            Sfx.Play("ui_move");
-            BuildPostProcess();
-        LoadMap();
-            UpdatePreview();
-            RefreshCharCard();
-        }
-        if (d != 0)
-        {
-            _sel = (_sel + d + GameData.Characters.Length) % GameData.Characters.Length;
-            Sfx.Play("ui_move");
-            UpdatePreview();
-            RefreshCharCard();
-        }
-        if (Input.IsActionJustPressed("menu_accept") || Input.IsActionJustPressed("fire"))
-        {
-            Sfx.Play("ui_select");
-            GameData.SelectedCharacter = _sel;
-            _menuLayer.QueueFree();
-            _menuCam.QueueFree();
-            _preview.QueueFree();
-            _preview = null;
-            StartGame();
-        }
+        float a = 0.6f + _menuT * 0.04f;
+        _menuCam.GlobalPosition = new Vector3(Mathf.Sin(a) * 16f, 10f, Mathf.Cos(a) * 16f);
+        _menuCam.LookAt(new Vector3(0, 1f, 0), Vector3.Up);
     }
 
     // ------------------------------------------------------------------ GAME
@@ -362,7 +253,7 @@ public partial class Main : Node3D
         _overPanel = MakePanel(record ? "NEW RECORD!" : "YOU WERE EATEN",
             $"WAVE {WaveNumber}     KILLS {Kills}\nSCORE {Score:N0}     BEST {_best:N0}",
             ("RETRY", () => { GameData.SkipMenu = true; Restart(); }),
-            ("CHANGE SURVIVOR", () => { GameData.SkipMenu = false; Restart(); }));
+            ("CHANGE SURVIVOR", () => { GameData.SkipMenu = false; GameData.MenuStart = 1; Restart(); }));
     }
 
     void Restart()
@@ -382,7 +273,7 @@ public partial class Main : Node3D
             _pausePanel = MakePanel("PAUSED", $"WAVE {WaveNumber}     SCORE {Score:N0}",
                 ("RESUME", TogglePause),
                 ("RESTART", () => { GameData.SkipMenu = true; Restart(); }),
-                ("QUIT TO MENU", () => { GameData.SkipMenu = false; Restart(); }));
+                ("QUIT TO MENU", () => { GameData.SkipMenu = false; GameData.MenuStart = 0; Restart(); }));
         }
         else if (Mode == State.Paused)
         {
@@ -411,13 +302,7 @@ public partial class Main : Node3D
         Button first = null;
         foreach (var (text, act) in buttons)
         {
-            var b = new Button { Text = text, CustomMinimumSize = new Vector2(380, 64), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter };
-            b.AddThemeFontOverride("font", TitleFont);
-            b.AddThemeFontSizeOverride("font_size", 30);
-            b.AddThemeStyleboxOverride("normal", Hud.Box(new Color(0.12f, 0.08f, 0.14f, 0.9f), 10, 3, new Color(0.4f, 0.3f, 0.45f)));
-            b.AddThemeStyleboxOverride("hover", Hud.Box(new Color(0.25f, 0.15f, 0.2f, 0.95f), 10, 3, new Color(1f, 0.75f, 0.3f)));
-            b.AddThemeStyleboxOverride("focus", Hud.Box(new Color(0.85f, 0.5f, 0.15f, 0.95f), 10, 4, new Color(1f, 0.9f, 0.5f)));
-            b.AddThemeStyleboxOverride("pressed", Hud.Box(new Color(1f, 0.6f, 0.2f), 10, 4, Colors.White));
+            var b = Hud.MakeButton(text);
             b.FocusEntered += () => Sfx.Play("ui_move", -6f);
             b.Pressed += () => { Sfx.Play("ui_select"); act(); };
             b.MouseEntered += b.GrabFocus;

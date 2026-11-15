@@ -11,3 +11,6 @@
 # .NET build output
 bin/
 obj/
+
+# Exported game builds
+binaries/

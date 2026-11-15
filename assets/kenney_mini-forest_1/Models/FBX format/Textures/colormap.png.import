@@ -4,15 +4,16 @@ importer="texture"
 type="CompressedTexture2D"
 uid="uid://4nndq3cyh7g5"
 path.s3tc="res://.godot/imported/colormap.png-da805a2d3bffd2e008f620a7bce4d12a.s3tc.ctex"
+path.etc2="res://.godot/imported/colormap.png-da805a2d3bffd2e008f620a7bce4d12a.etc2.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
+"imported_formats": ["s3tc_bptc", "etc2_astc"],
 "vram_texture": true
 }
 
 [deps]
 
 source_file="res://assets/kenney_mini-forest_1/Models/FBX format/Textures/colormap.png"
-dest_files=["res://.godot/imported/colormap.png-da805a2d3bffd2e008f620a7bce4d12a.s3tc.ctex"]
+dest_files=["res://.godot/imported/colormap.png-da805a2d3bffd2e008f620a7bce4d12a.s3tc.ctex", "res://.godot/imported/colormap.png-da805a2d3bffd2e008f620a7bce4d12a.etc2.ctex"]
 
 [params]
 

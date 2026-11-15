@@ -56,6 +56,8 @@ public static class GameData
     public static int SelectedCharacter = 0;
     public static int SelectedMap = 0;
     public static bool SkipMenu = false;
+    /// Menu screen to open on (0 title, 1 survivor select, 2 stage select).
+    public static int MenuStart = 0;
 
     public static int LoadBest(int map)
     {

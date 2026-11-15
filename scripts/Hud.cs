@@ -195,6 +195,18 @@ void fragment() {
         WeaponChanged();
     }
 
+    public static Button MakeButton(string text, int fontSize = 30, Vector2? size = null)
+    {
+        var b = new Button { Text = text, CustomMinimumSize = size ?? new Vector2(380, 64), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter };
+        b.AddThemeFontOverride("font", Main.TitleFont);
+        b.AddThemeFontSizeOverride("font_size", fontSize);
+        b.AddThemeStyleboxOverride("normal", Box(new Color(0.12f, 0.08f, 0.14f, 0.9f), 10, 3, new Color(0.4f, 0.3f, 0.45f)));
+        b.AddThemeStyleboxOverride("hover", Box(new Color(0.25f, 0.15f, 0.2f, 0.95f), 10, 3, new Color(1f, 0.75f, 0.3f)));
+        b.AddThemeStyleboxOverride("focus", Box(new Color(0.85f, 0.5f, 0.15f, 0.95f), 10, 4, new Color(1f, 0.9f, 0.5f)));
+        b.AddThemeStyleboxOverride("pressed", Box(new Color(1f, 0.6f, 0.2f), 10, 4, Colors.White));
+        return b;
+    }
+
     public static StyleBoxFlat Box(Color c, int radius, int border = 0, Color? borderColor = null)
     {
         var s = new StyleBoxFlat { BgColor = c };
