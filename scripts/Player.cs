@@ -78,7 +78,6 @@ public partial class Player : CharacterBody3D
         foreach (var c in _gun.GetChildren()) c.QueueFree();
         var m = Assets.Model(Weapon.Pack, Weapon.Model);
         float s = 0.7f * Weapon.Scale;
-        if (Weapon.FlipModel) m.RotationDegrees = new Vector3(0, 180, 0);
         _gun.AddChild(m);
         float minZ = 0;
         foreach (var mi in Assets.FindMeshes(m))

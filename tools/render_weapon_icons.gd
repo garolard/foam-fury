@@ -1,11 +1,11 @@
-# Renders HUD icons (64x64, transparent) for the custom weapon models, matching the
+# Renders HUD icons (128x128, transparent) for the custom weapon models, matching the
 # Kenney blaster-kit preview style. Needs a rendering driver (not --headless):
 #   Godot --path . --script tools/render_weapon_icons.gd
 extends SceneTree
 
 const DIR := "res://assets/custom-weapons/"
 const MODELS := ["blaster-mug", "blaster-flame"]
-const SIZE := 256
+const SIZE := 512
 
 func _initialize() -> void:
 	_run.call_deferred()
@@ -39,19 +39,18 @@ func _run() -> void:
 
 	for name in MODELS:
 		var model: Node3D = load(DIR + "Models/GLB format/%s.glb" % name).instantiate()
-		model.rotation_degrees.y = 180.0  # authored muzzle +Z; show it pointing right like the kit previews
 		vp.add_child(model)
 		var aabb := _aabb(model)
 		var c := aabb.get_center()
 		# 3/4 side view, muzzle (-Z) pointing right, slightly from above
 		cam.position = c + Vector3(2.0, 1.1, -0.9)
 		cam.look_at(c, Vector3.UP)
-		cam.size = aabb.get_longest_axis_size() * 1.15
+		cam.size = aabb.get_longest_axis_size() * 1.0
 		for i in 4:
 			await process_frame
 		await RenderingServer.frame_post_draw
 		var img := vp.get_texture().get_image()
-		img.resize(64, 64, Image.INTERPOLATE_LANCZOS)
+		img.resize(128, 128, Image.INTERPOLATE_LANCZOS)
 		var out := ProjectSettings.globalize_path(DIR + "Previews/%s.png" % name)
 		print("saved ", out, " err=", img.save_png(out))
 		model.queue_free()

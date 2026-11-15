@@ -125,7 +125,11 @@ public partial class MainMenu : CanvasLayer
     bool _done;
 
     // survivor card
-    Label _cIndex, _cName, _cTitle, _cPerk;
+    Label _cIndex, _cName, _cTitle, _cPerk, _cWeaponName, _cWeaponBlurb;
+    Control _cWeapon;
+    TextureRect _cWeaponIcon;
+    /// Signature weapon held by each carousel survivor (null if none).
+    readonly List<Node3D> _guns = new();
     readonly List<(StatBar bar, Label value)> _cStats = new();
     // stage card
     Label _sIndex, _sName, _sSub, _sBest, _sGates, _sRise;
@@ -203,6 +207,7 @@ public partial class MainMenu : CanvasLayer
             _chars.Add(m);
             m.Play("idle", 1f, 0f);
             _models.Add(m);
+            _guns.Add(c.Signature != null ? HeldWeapon(m, c.Signature) : null);
         }
         var dark = new Color(0.32f, 0.3f, 0.38f);
         _chars.Focus = (i, f) => _models[i].Material.AlbedoColor = dark.Lerp(Colors.White, f);
@@ -239,6 +244,43 @@ public partial class MainMenu : CanvasLayer
             d.AddChild(map);
             _maps.Add(d);
             _minis.Add(map);
+        }
+    }
+
+    /// Signature weapon model placed in the survivor's right hand (posed each frame in UpdateGuns).
+    // "port arms" showcase hold, in model space (+Z forward, +X is the model's left)
+    static readonly Vector3 HoldGunDir = new Vector3(0.75f, 0.6f, 0.3f).Normalized();
+
+    static Node3D HeldWeapon(CharacterModel m, WeaponDef w)
+    {
+        // right hand low in front of the hip, left hand reaching up to the barrel
+        m.Pose.ArmsWeight = 0.9f;
+        m.Pose.RightArm = new Vector3(-0.15f, -0.8f, 0.55f).Normalized();
+        m.Pose.RightFore = new Vector3(0.45f, -0.1f, 0.9f).Normalized();
+        m.Pose.LeftArm = new Vector3(0.1f, -0.55f, 0.8f).Normalized();
+        m.Pose.LeftFore = new Vector3(-0.2f, 0.45f, 0.85f).Normalized();
+        var gun = new Node3D { TopLevel = true };
+        var model = Assets.Model(w.Pack, w.Model);
+        gun.AddChild(model);
+        m.AddChild(gun);
+        return gun;
+    }
+
+    void UpdateGuns()
+    {
+        for (int i = 0; i < _guns.Count; i++)
+        {
+            var gun = _guns[i];
+            if (gun == null) continue;
+            var m = _models[i];
+            gun.Visible = m.IsVisibleInTree();
+            if (!gun.Visible) continue;
+            var b = m.GlobalBasis;
+            float carouselScale = b.Scale.X / 0.62f;
+            var dir = (b.Orthonormalized() * HoldGunDir).Normalized();
+            var s = 0.7f * GameData.Characters[i].Signature.Scale * carouselScale;
+            gun.GlobalTransform = new Transform3D(Basis.LookingAt(dir, Vector3.Up).Scaled(Vector3.One * s),
+                m.RightHand.GlobalPosition + dir * 0.05f * carouselScale);
         }
     }
 
@@ -372,6 +414,8 @@ public partial class MainMenu : CanvasLayer
         _cPerk = Hud.MakeLabel("", 26, new Color(0.75f, 1f, 0.7f), 6);
         perk.AddChild(_cPerk);
         Add(_survInfo, perk);
+        Add(_survInfo, new Control { CustomMinimumSize = new Vector2(0, 4) });
+        _cWeapon = Add(_survInfo, WeaponCard());
         Add(_survInfo, new Control { CustomMinimumSize = new Vector2(0, 22) });
         foreach (var (name, color) in new[] {
             ("HEALTH", new Color(0.95f, 0.3f, 0.32f)), ("SPEED", new Color(0.35f, 0.85f, 1f)), ("DAMAGE", new Color(1f, 0.6f, 0.2f)),
@@ -403,6 +447,34 @@ public partial class MainMenu : CanvasLayer
         _footer.AnchorLeft = 0; _footer.AnchorRight = 1; _footer.AnchorTop = 1; _footer.AnchorBottom = 1;
         _footer.OffsetTop = -74; _footer.OffsetBottom = -34;
         _pickUi.AddChild(_footer);
+    }
+
+    /// "SIGNATURE WEAPON" panel: icon, name and a one-line description.
+    Control WeaponCard()
+    {
+        var card = new PanelContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        var sb = Hud.Box(new Color(0.1f, 0.07f, 0.12f, 0.75f), 10, 2, new Color(Gold, 0.85f));
+        sb.ContentMarginLeft = sb.ContentMarginRight = 14; sb.ContentMarginTop = sb.ContentMarginBottom = 8;
+        card.AddThemeStyleboxOverride("panel", sb);
+        var row = new HBoxContainer();
+        row.AddThemeConstantOverride("separation", 14);
+        card.AddChild(row);
+        _cWeaponIcon = new TextureRect
+        {
+            CustomMinimumSize = new Vector2(84, 84), ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+            StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered, TextureFilter = CanvasItem.TextureFilterEnum.Linear,
+        };
+        row.AddChild(_cWeaponIcon);
+        var text = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, Alignment = BoxContainer.AlignmentMode.Center };
+        text.AddThemeConstantOverride("separation", 0);
+        row.AddChild(text);
+        text.AddChild(Hud.MakeLabel("SIGNATURE WEAPON", 18, Dim, 5));
+        _cWeaponName = Hud.MakeLabel("", 36, Gold, 8);
+        text.AddChild(_cWeaponName);
+        _cWeaponBlurb = Hud.MakeLabel("", 20, Soft, 5);
+        _cWeaponBlurb.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        text.AddChild(_cWeaponBlurb);
+        return card;
     }
 
     VBoxContainer InfoCard()
@@ -441,7 +513,14 @@ public partial class MainMenu : CanvasLayer
             _cIndex.Text = $"SURVIVOR  {i + 1} / {_chars.Count}";
             _cName.Text = c.Name;
             _cTitle.Text = c.Title.ToUpper();
-            _cPerk.Text = "★  " + c.Perk.ToUpper() + (c.Signature != null ? $"\n★  SIGNATURE: {c.Signature.Name.ToUpper()}" : "");
+            _cPerk.Text = "★  " + c.Perk.ToUpper();
+            _cWeapon.Visible = c.Signature != null;
+            if (c.Signature is { } w)
+            {
+                _cWeaponName.Text = w.Name.ToUpper();
+                _cWeaponBlurb.Text = w.Blurb;
+                _cWeaponIcon.Texture = ResourceLoader.Exists(w.IconPath) ? GD.Load<Texture2D>(w.IconPath) : null;
+            }
             float[] vals = { c.MaxHp / 160f, c.Speed / 7.4f, c.DamageMult / 1.25f, 0.55f / c.ReloadMult, c.Grenades / 6f };
             string[] txt = { $"{c.MaxHp:0}", $"{c.Speed:0.0}", $"{c.DamageMult * 100:0}%", $"{100 / c.ReloadMult:0}%", $"{c.Grenades}" };
             for (int k = 0; k < _cStats.Count; k++) { _cStats[k].bar.Target = vals[k]; _cStats[k].value.Text = txt[k]; }
@@ -517,6 +596,7 @@ public partial class MainMenu : CanvasLayer
     {
         float dt = (float)delta;
         _cool -= dt;
+        if (_guns.Count > 0) UpdateGuns();
         if (_settle > 0 && (_settle -= dt) <= 0 && _maps.Index != _backdrop)
         {
             _backdrop = _maps.Index;

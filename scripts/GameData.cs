@@ -5,13 +5,13 @@ public enum FireKind { Dart, Mud, Flame }
 public class WeaponDef
 {
     public string Name, Model, Sound;
+    /// One-line description for the survivor select screen.
+    public string Blurb;
     /// Asset folder under res://assets ("kit" = Kenney blaster kit).
     public string Pack = "kit";
     /// HUD icon; defaults to the Kenney kit preview for the model.
     public string Icon;
     public FireKind Kind = FireKind.Dart;
-    /// Model was authored with the muzzle at +Z (Kenney blasters point -Z); turn it around.
-    public bool FlipModel;
     /// Reserve ammo granted by an ammo pickup.
     public int AmmoPickup;
     public float Damage, FireRate, ReloadTime, Spread, Recoil, Scale = 0.9f;
@@ -55,7 +55,8 @@ public static class GameData
     /// REX: lobs globs of sticky mud that leave slowing, flammable puddles.
     public static readonly WeaponDef MudGun = new()
     {
-        Name = "Mug Gun", Model = "blaster-mug", Pack = "custom-weapons", Icon = CustomDir + "Previews/blaster-mug.png", Kind = FireKind.Mud, FlipModel = true,
+        Name = "Mug Gun", Model = "blaster-mug", Pack = "custom-weapons", Icon = CustomDir + "Previews/blaster-mug.png", Kind = FireKind.Mud,
+        Blurb = "Lobs sticky mug that slows zombies. Puddles are flammable!",
         Sound = "shot_mud", Damage = 18, FireRate = 0.45f, ReloadTime = 1.6f, Spread = 1.5f, Recoil = 2.2f, MagSize = 8,
         StartReserve = 32, MaxReserve = 64, AmmoPickup = 8, Tracer = new Color(0.42f, 0.32f, 0.12f), ProjectileSpeed = 24f, Scale = 0.85f,
     };
@@ -63,7 +64,8 @@ public static class GameData
     /// NOVA: short-range stream of fire that sets zombies (and mud puddles) ablaze.
     public static readonly WeaponDef Flamethrower = new()
     {
-        Name = "Scorcher", Model = "blaster-flame", Pack = "custom-weapons", Icon = CustomDir + "Previews/blaster-flame.png", Kind = FireKind.Flame, FlipModel = true,
+        Name = "Scorcher", Model = "blaster-flame", Pack = "custom-weapons", Icon = CustomDir + "Previews/blaster-flame.png", Kind = FireKind.Flame,
+        Blurb = "Short-range fire stream. Sets zombies ablaze and ignites mug puddles.",
         Sound = "flame", Damage = 7, FireRate = 0.05f, ReloadTime = 2.0f, Spread = 4f, Recoil = 0.15f, MagSize = 100,
         StartReserve = 200, MaxReserve = 400, AmmoPickup = 100, Auto = true, Tracer = new Color(1f, 0.5f, 0.1f), ProjectileSpeed = 17f, Scale = 0.75f,
     };
