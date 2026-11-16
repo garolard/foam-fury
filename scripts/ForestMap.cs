@@ -57,8 +57,8 @@ public partial class ForestMap : MapBase
             float a = k / 7f * Mathf.Tau;
             Place("forest", "stones", new Vector3(Mathf.Cos(a) * 1.1f, 0, Mathf.Sin(a) * 1.1f), Rng.RandfRange(0, 360), 0.9f, false);
         }
-        Flame(new Vector3(0, 0.35f, 0), new Color(1f, 0.5f, 0.15f), 0.35f);
-        Flame(new Vector3(0.15f, 0.7f, 0.05f), new Color(1f, 0.75f, 0.25f), 0.2f);
+        Flame(new Vector3(0, 0.45f, 0), new Color(1f, 0.5f, 0.15f), 0.42f);
+        Flame(new Vector3(0.3f, 0.3f, -0.15f), new Color(1f, 0.75f, 0.25f), 0.22f, small: true);
         Light(new Vector3(0, 1.2f, 0), new Color(1f, 0.55f, 0.2f), 3f, 10f, true, 1.2f, shadows: true);
         Box(new Vector3(0, 0.3f, 0), new Vector3(1.6f, 0.6f, 1.6f));
 

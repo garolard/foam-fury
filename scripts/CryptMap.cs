@@ -33,7 +33,7 @@ public partial class CryptMap : MapBase
 
     void Torch(Vector3 at, bool shadows = false)
     {
-        Flame(at, TorchColor, 0.2f);
+        Flame(at, TorchColor, 0.2f, small: true);
         Light(at + Vector3.Up * 0.2f, TorchColor, 2.6f, 10f, shadows: shadows);
     }
 

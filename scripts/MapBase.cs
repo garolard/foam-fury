@@ -9,6 +9,7 @@ public abstract partial class MapBase : NavigationRegion3D
     public readonly List<Vector3> InnerSpawns = new();
     protected RandomNumberGenerator Rng = new() { Seed = 1337 };
     readonly List<(OmniLight3D light, float baseEnergy, float speed)> _flicker = new();
+    readonly List<(Node3D node, Vector3 baseScale)> _flames = new();
 
     public abstract string Title { get; }
     public abstract string Subtitle { get; }
@@ -54,6 +55,14 @@ public abstract partial class MapBase : NavigationRegion3D
         {
             var (l, e, sp) = _flicker[i];
             l.LightEnergy = e * (0.85f + 0.15f * Mathf.Sin(t * 13f * sp + i * 1.7f) * Mathf.Sin(t * 7.3f * sp + i));
+        }
+        // flames lick: stretch/squash out of phase with each other and slowly turn so the twist reads as motion
+        for (int i = 0; i < _flames.Count; i++)
+        {
+            var (n, s) = _flames[i];
+            float k = Mathf.Sin(t * 11f + i * 2.3f) * Mathf.Sin(t * 6.1f + i * 0.9f);
+            n.Scale = new Vector3(s.X * (1f - 0.08f * k), s.Y * (1f + 0.16f * k), s.Z * (1f - 0.08f * k));
+            n.Rotation = new Vector3(0, n.Rotation.Y + (float)delta * (1.6f + (i % 3) * 0.5f), 0);
         }
     }
 
@@ -119,7 +128,22 @@ public abstract partial class MapBase : NavigationRegion3D
         return l;
     }
 
-    protected void Flame(Vector3 pos, Color color, float size = 0.22f)
+    /// Animated low-poly flame centred roughly on `pos`; `size` ~ the radius of the fire.
+    protected void Flame(Vector3 pos, Color color, float size = 0.22f, bool small = false)
+    {
+        var h = size * (small ? 2.8f : 3.2f);
+        var m = new MeshInstance3D
+        {
+            Mesh = Fx.FireMesh(small ? "flame-small" : "flame-cluster"), MaterialOverride = Fx.FireMat(color),
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off, Position = pos - Vector3.Up * size * 0.9f,
+            Scale = Vector3.One * h, Rotation = new Vector3(0, (float)GD.RandRange(0, Mathf.Tau), 0),
+        };
+        AddChild(m);
+        _flames.Add((m, m.Scale));
+    }
+
+    /// Glowing lamp bulb (not fire).
+    protected void Bulb(Vector3 pos, Color color, float size = 0.22f)
     {
         AddChild(new MeshInstance3D
         {

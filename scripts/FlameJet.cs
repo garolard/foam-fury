@@ -16,7 +16,6 @@ public partial class FlameJet : Node3D
 
     static Gradient _ramp;
     static StandardMaterial3D _particleMat;
-    static SphereMesh _ballMesh;
 
     /// Hot white-yellow core -> orange -> dark smoke, fading out. HDR values so it glows.
     public static Gradient FireRamp => _ramp ??= new Gradient
@@ -46,13 +45,13 @@ public partial class FlameJet : Node3D
 
     public override void _Ready()
     {
-        _ballMesh ??= new SphereMesh { Radius = 0.5f, Height = 1f, RadialSegments = 8, Rings = 4 };
         _mat = new StandardMaterial3D
         {
             ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded, Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-            AlbedoColor = FireRamp.Sample(0),
+            AlbedoColor = FireRamp.Sample(0), VertexColorUseAsAlbedo = true, CullMode = BaseMaterial3D.CullModeEnum.Disabled,
         };
-        _ball = new MeshInstance3D { Mesh = _ballMesh, MaterialOverride = _mat, CastShadow = GeometryInstance3D.ShadowCastingSetting.Off };
+        _ball = new MeshInstance3D { Mesh = Fx.FireMesh("fireball"), MaterialOverride = _mat, CastShadow = GeometryInstance3D.ShadowCastingSetting.Off };
+        _ball.Rotation = new Vector3(GD.Randf(), GD.Randf(), GD.Randf()) * Mathf.Tau;
         _ball.Scale = Vector3.One * 0.2f;
         AddChild(_ball);
     }
@@ -80,7 +79,8 @@ public partial class FlameJet : Node3D
         _vel *= Mathf.Exp(-2.2f * dt);
         _vel.Y += 3f * dt;
 
-        _ball.Scale = Vector3.One * radius * 2f * (0.9f + 0.2f * GD.Randf());
+        _ball.Scale = Vector3.One * radius * 1.7f * (0.9f + 0.2f * GD.Randf());
+        _ball.RotateY(dt * 9f); // tumbling spikes read as licking flame
         _mat.AlbedoColor = FireRamp.Sample(t);
 
         var pos = GlobalPosition;

@@ -288,10 +288,10 @@ public partial class Zombie : CharacterBody3D
         {
             _burnFx = new CpuParticles3D
             {
-                Amount = 24, Lifetime = 0.5f, Mesh = new BoxMesh { Size = Vector3.One * 0.16f * (_scale / 0.62f), Material = FlameJet.ParticleMaterial },
+                Amount = 24, Lifetime = 0.5f, Mesh = Fx.FireMesh("flame-wisp"), MaterialOverride = FlameJet.ParticleMaterial,
                 EmissionShape = CpuParticles3D.EmissionShapeEnum.Box, EmissionBoxExtents = new Vector3(0.35f, Height * 0.4f, 0.35f) * (_scale / 0.62f),
                 Position = Vector3.Up * Height * 0.45f, Direction = Vector3.Up, Spread = 20f, Gravity = new Vector3(0, 3f, 0),
-                InitialVelocityMin = 0.5f, InitialVelocityMax = 1.6f, ScaleAmountMin = 0.6f, ScaleAmountMax = 1.3f,
+                InitialVelocityMin = 0.5f, InitialVelocityMax = 1.6f, ScaleAmountMin = 0.21f * (_scale / 0.62f), ScaleAmountMax = 0.45f * (_scale / 0.62f),
                 ColorRamp = FlameJet.FireRamp, CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
             };
             AddChild(_burnFx);

@@ -103,11 +103,11 @@ public partial class MudPuddle : Node3D
         _spreadCd = 0.15f;
         _fire = new CpuParticles3D
         {
-            Amount = (int)(28 * Radius), Lifetime = 0.7f, Mesh = new BoxMesh { Size = Vector3.One * 0.22f, Material = FlameJet.ParticleMaterial },
+            Amount = (int)(28 * Radius), Lifetime = 0.7f, Mesh = Fx.FireMesh("flame-wisp"), MaterialOverride = FlameJet.ParticleMaterial,
             EmissionShape = CpuParticles3D.EmissionShapeEnum.Ring, EmissionRingAxis = Vector3.Up, EmissionRingRadius = Radius * 0.85f,
             EmissionRingInnerRadius = 0f, EmissionRingHeight = 0.1f,
             Direction = Vector3.Up, Spread = 15f, Gravity = new Vector3(0, 4f, 0), InitialVelocityMin = 0.8f, InitialVelocityMax = 2.2f,
-            ScaleAmountMin = 0.6f, ScaleAmountMax = 1.6f, ColorRamp = FlameJet.FireRamp, CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            ScaleAmountMin = 0.27f, ScaleAmountMax = 0.7f, ColorRamp = FlameJet.FireRamp, CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
             Position = Vector3.Up * 0.15f,
         };
         AddChild(_fire);

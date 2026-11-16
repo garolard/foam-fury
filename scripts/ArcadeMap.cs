@@ -136,7 +136,7 @@ public partial class ArcadeMap : MapBase
                 Box(lp + Vector3.Up * 2.5f, new Vector3(0.3f, 5f, 0.3f));
                 AddChild(new MeshInstance3D { Mesh = new CylinderMesh { TopRadius = 0.08f, BottomRadius = 0.08f, Height = 5f },
                     MaterialOverride = new StandardMaterial3D { AlbedoColor = new Color(0.2f, 0.2f, 0.25f) }, Position = lp + Vector3.Up * 2.5f });
-                Flame(lp + Vector3.Up * 5f, new Color(1f, 0.85f, 0.6f), 0.25f);
+                Bulb(lp + Vector3.Up * 5f, new Color(1f, 0.85f, 0.6f), 0.25f);
                 Light(lp + Vector3.Up * 4.8f, new Color(1f, 0.8f, 0.55f), 2.5f, 12f, false);
             }
         }
