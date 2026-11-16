@@ -10,19 +10,21 @@ public partial class MudGlob : Node3D
     Vector3 _vel;
     float _damage, _life = 3f, _drip;
     readonly Godot.Collections.Array<Rid> _exclude = new();
+    Player _source;
 
     static SphereMesh _mesh;
     static StandardMaterial3D _mat;
 
     public static StandardMaterial3D WetMud => _mat ??= new StandardMaterial3D { AlbedoColor = MudColor, Roughness = 0.08f, Metallic = 0.25f };
 
-    public static void Fire(Vector3 pos, Vector3 dir, WeaponDef w, float damageMult, Rid ownerRid)
+    public static void Fire(Vector3 pos, Vector3 dir, WeaponDef w, float damageMult, Rid ownerRid, Player source = null)
     {
         var g = new MudGlob
         {
             // slight upward lob so it arcs like a thrown blob instead of flying like a dart
             _vel = dir.Normalized() * w.ProjectileSpeed + Vector3.Up * 2.5f,
             _damage = w.Damage * damageMult,
+            _source = source,
         };
         g._exclude.Add(ownerRid);
         Main.Instance.World.AddChild(g);
@@ -59,7 +61,7 @@ public partial class MudGlob : Node3D
         Vector3? floor;
         if (hit["collider"].AsGodotObject() is Zombie z)
         {
-            z.TakeDamage(_damage, pos, dir, z.IsHeadshot(hit["shape"].AsInt32()), 1.5f);
+            z.TakeDamage(_damage, pos, dir, z.IsHeadshot(hit["shape"].AsInt32()), 1.5f, source: _source);
             z.Slow(HitSlow, HitSlowTime);
             floor = MudPuddle.FindFloor(space, new Vector3(z.GlobalPosition.X, pos.Y, z.GlobalPosition.Z) + Vector3.Up * 0.5f);
         }

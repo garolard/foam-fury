@@ -9,12 +9,13 @@ public partial class Projectile : Node3D
     Color _color;
     readonly Godot.Collections.Array<Rid> _exclude = new();
     readonly HashSet<Zombie> _hit = new();
+    Player _source;
 
     static CylinderMesh _tracerMesh;
 
-    public static void Fire(Vector3 pos, Vector3 dir, WeaponDef w, float damageMult, Rid ownerRid)
+    public static void Fire(Vector3 pos, Vector3 dir, WeaponDef w, float damageMult, Rid ownerRid, Player source = null)
     {
-        var p = new Projectile();
+        var p = new Projectile { _source = source };
         p._dir = dir.Normalized();
         p._speed = w.ProjectileSpeed;
         p._damage = w.Damage * damageMult;
@@ -60,7 +61,7 @@ public partial class Projectile : Node3D
                 if (!_hit.Contains(z))
                 {
                     _hit.Add(z);
-                    z.TakeDamage(_damage, pos, _dir, z.IsHeadshot(hit["shape"].AsInt32()));
+                    z.TakeDamage(_damage, pos, _dir, z.IsHeadshot(hit["shape"].AsInt32()), source: _source);
                 }
                 _exclude.Add(hit["rid"].AsRid());
                 if (_pierce-- <= 0) { QueueFree(); return; }

@@ -10,6 +10,7 @@ public partial class FlameJet : Node3D
     Vector3 _vel;
     float _life, _damage;
     readonly HashSet<Zombie> _hit = new();
+    Player _source;
     MeshInstance3D _ball;
     StandardMaterial3D _mat;
 
@@ -31,12 +32,13 @@ public partial class FlameJet : Node3D
         Transparency = BaseMaterial3D.TransparencyEnum.Alpha, CullMode = BaseMaterial3D.CullModeEnum.Disabled,
     };
 
-    public static void Fire(Vector3 pos, Vector3 dir, Vector3 inheritVel, WeaponDef w, float damageMult)
+    public static void Fire(Vector3 pos, Vector3 dir, Vector3 inheritVel, WeaponDef w, float damageMult, Player source = null)
     {
         var j = new FlameJet
         {
             _vel = dir.Normalized() * w.ProjectileSpeed * (float)GD.RandRange(0.85, 1.1) + inheritVel * 0.5f,
             _damage = w.Damage * damageMult,
+            _source = source,
         };
         Main.Instance.World.AddChild(j);
         j.GlobalPosition = pos;
@@ -72,7 +74,7 @@ public partial class FlameJet : Node3D
             var n = hit["normal"].AsVector3();
             to = hit["position"].AsVector3() + n * 0.15f;
             _vel = (_vel - n * _vel.Dot(n)) * 0.4f;
-            MudPuddle.IgniteAt(to, radius); // flame splashing on the floor lights any mud there
+            MudPuddle.IgniteAt(to, radius, _source); // flame splashing on the floor lights any mud there
         }
         GlobalPosition = to;
         _vel *= Mathf.Exp(-2.2f * dt);
@@ -90,9 +92,9 @@ public partial class FlameJet : Node3D
             if (d.Length() > radius + zr) continue;
             if (pos.Y < z.GlobalPosition.Y - radius || pos.Y > z.GlobalPosition.Y + z.Height + radius) continue;
             _hit.Add(z);
-            z.Ignite(BurnDps, BurnTime);
-            z.TakeDamage(_damage, pos, _vel.Normalized(), false, 0.4f, false, true);
+            z.Ignite(BurnDps, BurnTime, _source);
+            z.TakeDamage(_damage, pos, _vel.Normalized(), false, 0.4f, false, true, _source);
         }
-        MudPuddle.IgniteAt(pos, radius * 0.6f);
+        MudPuddle.IgniteAt(pos, radius * 0.6f, _source);
     }
 }

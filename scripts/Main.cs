@@ -11,10 +11,15 @@ public partial class Main : Node3D
 
     public Node3D World;
     public MapBase Arena;
-    public Player Player;
-    public CameraRig Rig;
-    public Hud Hud;
+    /// Everyone in the run (1 in single player, 2-4 in local co-op).
+    public readonly List<Player> Players = new();
+    /// Player 1 (debug hooks, solo code paths).
+    public Player Player => Players.Count > 0 ? Players[0] : null;
+    /// The only player in a solo run, null in co-op.
+    public Player SoloPlayer => Players.Count == 1 ? Players[0] : null;
+    public bool Coop => Players.Count > 1;
     public readonly List<Zombie> Zombies = new();
+    AudioListener3D _listener;
 
     // game stats
     public int Score, WaveNumber, Kills, ComboMult = 1;
@@ -137,22 +142,108 @@ public partial class Main : Node3D
     {
         Mode = State.Playing;
         GameData.SkipMenu = false;
-        Input.MouseMode = Input.MouseModeEnum.Captured;
-        Rig = new CameraRig();
-        World.AddChild(Rig);
-        Rig.Yaw = 0; Rig.Pitch = -0.12f;
-        Player = new Player();
-        Player.Setup(GameData.Characters[GameData.SelectedCharacter], Rig);
-        World.AddChild(Player);
-        Player.GlobalPosition = new Vector3(0, 0.1f, 6f);
-        if (OS.GetEnvironment("FF_GOD") == "1") { Player.MaxHp = Player.Hp = 99999; }
+        var slots = GameData.Slots.Count > 0
+            ? new List<PlayerSlot>(GameData.Slots)
+            : new List<PlayerSlot> { new(InputSetup.AnyPad, true, GameData.SelectedCharacter) };
+        if (OS.GetEnvironment("FF_COOP") is { Length: > 0 } fc && int.TryParse(fc, out int nc) && nc > 1) slots = DebugSlots(nc);
+        if (slots.Exists(s => s.Kbm)) Input.MouseMode = Input.MouseModeEnum.Captured;
+
+        var views = SplitScreen.Build(this, slots.Count);
+        float uiScale = 1f;
+        if (views != null)
+        {
+            var screen = GetViewport().GetVisibleRect().Size;
+            var cell = slots.Count == 2 ? new Vector2(screen.X / 2, screen.Y) : screen / 2;
+            uiScale = Mathf.Clamp(Mathf.Min(cell.X / 1600f, cell.Y / 900f), 0.6f, 1f);
+        }
+        for (int i = 0; i < slots.Count; i++)
+        {
+            var slot = slots[i];
+            var rig = new CameraRig();
+            if (views != null) views[i].AddChild(rig); else World.AddChild(rig);
+            rig.Yaw = 0; rig.Pitch = -0.12f;
+            var hud = new Hud();
+            var p = new Player();
+            p.Setup(GameData.Characters[slot.Character], rig, new PlayerInput(i, slot.Pad, slot.Kbm), hud);
+            World.AddChild(p);
+            // line the team up across the start area
+            p.GlobalPosition = new Vector3((i - (slots.Count - 1) / 2f) * 1.5f, 0.1f, 6f);
+            if (OS.GetEnvironment("FF_GOD") == "1") { p.MaxHp = p.Hp = 99999; }
+            rig.Snap();
+            if (views != null) views[i].AddChild(hud); else AddChild(hud);
+            hud.Init(p, uiScale);
+            Players.Add(p);
+        }
+        if (Coop)
+        {
+            // one shared ear between the players; the split cameras don't listen
+            _listener = new AudioListener3D();
+            World.AddChild(_listener);
+            _listener.MakeCurrent();
+            UpdateListener();
+        }
         if (OS.GetEnvironment("FF_WAVE") is { Length: > 0 } fw) WaveNumber = int.Parse(fw) - 1;
-        Rig.Snap();
-        Hud = new Hud();
-        AddChild(Hud);
-        Hud.Init(Player);
+        _best = GameData.LoadBest(_map, Coop);
         _breakTimer = 3.5f;
-        Hud.Banner("SURVIVE", "hold the arena as long as you can", 1.6f);
+        Banner("SURVIVE", Coop ? "stick together — hold (X) near a downed friend to revive" : "hold the arena as long as you can", 1.6f);
+    }
+
+    /// FF_COOP=n: n players, pads handed out in connection order, player 1 also on keyboard+mouse.
+    static List<PlayerSlot> DebugSlots(int n)
+    {
+        var pads = Input.GetConnectedJoypads();
+        var list = new List<PlayerSlot>();
+        for (int i = 0; i < Mathf.Min(n, 4); i++)
+            list.Add(new PlayerSlot(i < pads.Count ? pads[i] : InputSetup.NoPad, i == 0, i % GameData.Characters.Length));
+        return list;
+    }
+
+    void Banner(string text, string sub, float hold)
+    {
+        foreach (var p in Players) p.Hud.Banner(text, sub, hold);
+    }
+
+    void Toast(string text, Color color)
+    {
+        foreach (var p in Players) p.Hud.Toast(text, color);
+    }
+
+    /// Nearest player still on their feet (zombie targeting), or null.
+    public Player ClosestTarget(Vector3 from)
+    {
+        Player best = null;
+        float bd = float.MaxValue;
+        foreach (var p in Players)
+        {
+            if (!p.Targetable) continue;
+            float d = p.GlobalPosition.DistanceSquaredTo(from);
+            if (d < bd) { bd = d; best = p; }
+        }
+        return best;
+    }
+
+    public bool AnyStanding => Players.Exists(p => p.Targetable);
+
+    /// Camera shake (+ optional rumble) from an event at `at`; in co-op it fades with distance from each player.
+    public void Shake(Vector3 at, float trauma, float weak = 0f, float strong = 0f, float duration = 0f)
+    {
+        foreach (var p in Players)
+        {
+            float k = Coop ? Mathf.Clamp(1.4f - p.GlobalPosition.DistanceTo(at) / 25f, 0.25f, 1f) : 1f;
+            p.Rig.AddTrauma(trauma * k);
+            if (duration > 0) p.In.Rumble(weak * k, strong * k, duration);
+        }
+    }
+
+    void UpdateListener()
+    {
+        if (_listener == null) return;
+        Vector3 sum = Vector3.Zero;
+        int n = 0;
+        foreach (var p in Players) if (!p.Dead) { sum += p.GlobalPosition; n++; }
+        if (n == 0) return;
+        var rig = Players[0].Rig;
+        _listener.GlobalTransform = new Transform3D(new Basis(Vector3.Up, rig.Yaw), sum / n + Vector3.Up * 1.6f);
     }
 
     void StartWave()
@@ -164,7 +255,7 @@ public partial class Main : Node3D
         if (WaveNumber % 5 == 0) _bruteQueue += 2;
         _spawnTimer = 0.5f;
         bool boss = WaveNumber % 5 == 0;
-        Hud.Banner($"WAVE {WaveNumber}", boss ? "BRUTE HORDE INCOMING" : WaveNumber == 1 ? "here they come" : $"{_toSpawn} zombies", 1.8f);
+        Banner($"WAVE {WaveNumber}", boss ? "BRUTE HORDE INCOMING" : WaveNumber == 1 ? "here they come" : $"{_toSpawn} zombies", 1.8f);
         Sfx.Play("wave_start", -2f);
         InputSetup.Rumble(0.3f, 0.3f, 0.4f);
     }
@@ -185,7 +276,8 @@ public partial class Main : Node3D
             for (int k = 0; k < 8; k++)
             {
                 pos = Arena.InnerSpawns[GD.RandRange(0, Arena.InnerSpawns.Count - 1)];
-                if (pos.DistanceTo(Player.GlobalPosition) > 9f) break;
+                var near = ClosestTarget(pos);
+                if (near == null || pos.DistanceTo(near.GlobalPosition) > 9f) break;
             }
         }
         else
@@ -200,10 +292,11 @@ public partial class Main : Node3D
         Zombies.Add(z);
     }
 
-    public void OnZombieKilled(Zombie z, bool headshot)
+    public void OnZombieKilled(Zombie z, bool headshot, Player killer = null)
     {
         Zombies.Remove(z);
         Kills++;
+        if (killer != null) killer.Kills++;
         _combo = _comboTimer > 0 ? _combo + 1 : 0;
         _comboTimer = 2.8f;
         ComboMult = Mathf.Min(1 + _combo / 3, 8);
@@ -213,12 +306,14 @@ public partial class Main : Node3D
         InputSetup.Rumble(0.2f, z.Type == ZombieType.Brute ? 0.6f : 0.15f, 0.1f);
 
         // loot
-        float dropMult = Player?.Def.DropMult ?? 1f;
+        // the best scavenger still alive sets the team's loot luck
+        float dropMult = 1f;
+        foreach (var p in Players) if (!p.Dead) dropMult = Mathf.Max(dropMult, p.Def.DropMult);
         int drops = z.Type == ZombieType.Brute ? 2 : GD.Randf() < 0.2f * dropMult ? 1 : 0;
         if (z.Type == ZombieType.Brute && dropMult > 1) drops++;
         for (int i = 0; i < drops; i++)
         {
-            float lowHp = Player != null && Player.Hp < Player.MaxHp * 0.5f ? 20f : 0f;
+            float lowHp = Players.Exists(p => p.Targetable && p.Hp < p.MaxHp * 0.5f) ? 20f : 0f;
             float r = GD.Randf() * (100f + lowHp);
             var kind = r < 45 ? PickupKind.Ammo : r < 60 ? PickupKind.Grenade : r < 75 ? PickupKind.Coin : PickupKind.Health;
             Pickup.Spawn(kind, z.GlobalPosition);
@@ -232,9 +327,24 @@ public partial class Main : Node3D
         Fx.Number(at, $"+{total}", ComboMult > 1 ? new Color(1f, 0.55f, 0.3f) : new Color(0.7f, 1f, 0.6f), 1.1f);
     }
 
-    public void OnPlayerDied()
+    /// Co-op: someone is down. The run only ends once nobody is left standing.
+    public void OnPlayerDowned(Player p)
     {
         if (Mode != State.Playing) return;
+        Sfx.Play("game_over", -8f);
+        if (AnyStanding) { Toast($"{p.Def.Name} IS DOWN!", new Color(1f, 0.35f, 0.3f)); return; }
+        EndRun();
+    }
+
+    public void OnPlayerDied(Player p)
+    {
+        if (Mode != State.Playing) return;
+        if (Coop && AnyStanding) { Toast($"{p.Def.Name} BLED OUT", new Color(0.8f, 0.6f, 0.6f)); return; }
+        EndRun();
+    }
+
+    void EndRun()
+    {
         Mode = State.GameOver;
         Engine.TimeScale = 0.3f;
         Sfx.Play("game_over");
@@ -248,12 +358,20 @@ public partial class Main : Node3D
     void ShowGameOver()
     {
         bool record = Score > _best;
-        if (record) { _best = Score; GameData.SaveBest(_map, Score); }
+        if (record) { _best = Score; GameData.SaveBest(_map, Score, Coop); }
         Input.MouseMode = Input.MouseModeEnum.Visible;
-        _overPanel = MakePanel(record ? "NEW RECORD!" : "YOU WERE EATEN",
-            $"WAVE {WaveNumber}     KILLS {Kills}\nSCORE {Score:N0}     BEST {_best:N0}",
+        string stats = $"WAVE {WaveNumber}     KILLS {Kills}\nSCORE {Score:N0}     BEST {_best:N0}";
+        if (Coop) stats += "\n" + string.Join("     ", Players.ConvertAll(p => $"{p.Def.Name} {p.Kills}"));
+        _overPanel = MakePanel(record ? "NEW RECORD!" : Coop ? "THE HORDE WINS" : "YOU WERE EATEN", stats,
             ("RETRY", () => { GameData.SkipMenu = true; Restart(); }),
-            ("CHANGE SURVIVOR", () => { GameData.SkipMenu = false; GameData.MenuStart = 1; Restart(); }));
+            (Coop ? "CHANGE TEAM" : "CHANGE SURVIVOR", ChangeTeam));
+    }
+
+    void ChangeTeam()
+    {
+        GameData.SkipMenu = false;
+        GameData.MenuStart = (int)(GameData.Coop ? MainMenu.Screen.Lobby : MainMenu.Screen.Survivor);
+        Restart();
     }
 
     void Restart()
@@ -329,7 +447,7 @@ public partial class Main : Node3D
                 z.GlobalPosition = new Vector3(3f + i * 3f, 0.05f, 2.5f);
                 Zombies.Add(z); _testZ.Add(z);
             }
-            Rig.Yaw = 0; Rig.Pitch = -0.05f;
+            Player.Rig.Yaw = 0; Player.Rig.Pitch = -0.05f;
             var cam = new Camera3D { Fov = 50 };
             World.AddChild(cam);
             bool pc = OS.GetEnvironment("FF_PCAM") == "1";
@@ -337,12 +455,12 @@ public partial class Main : Node3D
             cam.LookAt(pc ? new Vector3(0, 1.3f, 6f) : new Vector3(6f, 0.6f, 2.5f), Vector3.Up);
             cam.MakeCurrent();
         }
-        Input.ActionPress("aim");
+        Input.ActionPress(Player.In.A("aim"));
         float t = _time;
         if (_animStep == 1 && t > 2.0f) { _animStep = 2; _testZ[0].TakeDamage(999, _testZ[0].GlobalPosition + Vector3.Up, Vector3.Forward, false); }
         if (_animStep == 2 && t > 2.1f) { _animStep = 3; _testZ[1].TakeDamage(999, _testZ[1].GlobalPosition + Vector3.Up * 2, Vector3.Forward, true); }
         if (_animStep == 3 && t > 2.2f) { _animStep = 4; _testZ[2].TakeDamage(9999, _testZ[2].GlobalPosition + Vector3.Up, new Vector3(0.3f, 0, -1), false, 10, true); }
-        if (t > 1.0f && Engine.GetProcessFrames() % 20 == 0) Input.ActionPress("fire"); else Input.ActionRelease("fire");
+        if (t > 1.0f && Engine.GetProcessFrames() % 20 == 0) Input.ActionPress(Player.In.A("fire")); else Input.ActionRelease(Player.In.A("fire"));
     }
 
     void AutoPlay()
@@ -354,16 +472,17 @@ public partial class Main : Node3D
             float d = z.GlobalPosition.DistanceTo(Player.GlobalPosition);
             if (d < bd) { bd = d; best = z; }
         }
-        Input.ActionRelease("fire");
-        if (best == null || bd > 30f) { Input.ActionRelease("aim"); return; }
-        Input.ActionPress("aim");
+        Input.ActionRelease(Player.In.A("fire"));
+        if (best == null || bd > 30f) { Input.ActionRelease(Player.In.A("aim")); return; }
+        Input.ActionPress(Player.In.A("aim"));
         var aimAt = OS.GetEnvironment("FF_HEAD") == "1" ? best.GlobalPosition + Vector3.Up * best.Height * 0.85f : best.AimPoint;
-        var to = aimAt - Rig.GlobalPosition;
-        Rig.Yaw = Mathf.LerpAngle(Rig.Yaw, Mathf.Atan2(-to.X, -to.Z) + 0.12f, 0.3f);
-        Rig.Pitch = Mathf.Lerp(Rig.Pitch, Mathf.Atan2(to.Y, new Vector2(to.X, to.Z).Length()), 0.3f);
-        if (Engine.GetProcessFrames() % 3 == 0) Input.ActionPress("fire");
-        if (Engine.GetProcessFrames() % 500 == 0 && OS.GetEnvironment("FF_KEEPWEAPON") != "1") Input.ActionPress("weapon_next"); else Input.ActionRelease("weapon_next");
-        if (Engine.GetProcessFrames() % 700 == 0) Input.ActionPress("grenade"); else Input.ActionRelease("grenade");
+        var rig = Player.Rig;
+        var to = aimAt - rig.GlobalPosition;
+        rig.Yaw = Mathf.LerpAngle(rig.Yaw, Mathf.Atan2(-to.X, -to.Z) + 0.12f, 0.3f);
+        rig.Pitch = Mathf.Lerp(rig.Pitch, Mathf.Atan2(to.Y, new Vector2(to.X, to.Z).Length()), 0.3f);
+        if (Engine.GetProcessFrames() % 3 == 0) Input.ActionPress(Player.In.A("fire"));
+        if (Engine.GetProcessFrames() % 500 == 0 && OS.GetEnvironment("FF_KEEPWEAPON") != "1") Input.ActionPress(Player.In.A("weapon_next")); else Input.ActionRelease(Player.In.A("weapon_next"));
+        if (Engine.GetProcessFrames() % 700 == 0) Input.ActionPress(Player.In.A("grenade")); else Input.ActionRelease(Player.In.A("grenade"));
         if (OS.GetEnvironment("FF_TOP") == "1" && _topCam == null)
         {
             _topCam = new Camera3D { Current = true, Fov = 60 };
@@ -371,7 +490,7 @@ public partial class Main : Node3D
             _topCam.GlobalPosition = new Vector3(0, 55, 22);
             _topCam.LookAt(new Vector3(0, 0, 2), Vector3.Up);
         }
-        if (bd < 4f && Engine.GetProcessFrames() % 120 == 0) Input.ActionPress("dash"); else Input.ActionRelease("dash");
+        if (bd < 4f && Engine.GetProcessFrames() % 120 == 0) Input.ActionPress(Player.In.A("dash")); else Input.ActionRelease(Player.In.A("dash"));
     }
 
     public override void _Process(double delta)
@@ -394,9 +513,11 @@ public partial class Main : Node3D
         if (Mode == State.Paused && Input.IsActionJustPressed("menu_back")) { TogglePause(); return; }
         if (Mode != State.Playing) return;
 
-        if (Input.MouseMode != Input.MouseModeEnum.Captured && Input.IsMouseButtonPressed(MouseButton.Left))
+        if (Input.MouseMode != Input.MouseModeEnum.Captured && Input.IsMouseButtonPressed(MouseButton.Left) && Players.Exists(p => p.In.Kbm))
             Input.MouseMode = Input.MouseModeEnum.Captured;
 
+        UpdateListener();
+        if (Coop) ReviveProcess(dt);
         _comboTimer -= dt;
         if (_comboTimer <= 0 && _combo > 0) { _combo = 0; ComboMult = 1; }
 
@@ -420,10 +541,58 @@ public partial class Main : Node3D
             _waveActive = false;
             int bonus = WaveNumber * 500;
             Score += bonus;
-            Hud.Banner($"WAVE {WaveNumber} CLEARED", $"+{bonus:N0} bonus   ·   health restored", 2.2f);
+            bool revived = false;
+            foreach (var p in Players)
+            {
+                if (!p.Downed && !p.Dead) continue;
+                // bled out: back in the fight next to a teammate
+                if (p.Dead && ClosestTarget(p.GlobalPosition) is { } buddy) p.GlobalPosition = buddy.GlobalPosition + new Vector3(1.2f, 0.3f, 0);
+                p.Revive(0.4f);
+                revived = true;
+            }
+            Banner($"WAVE {WaveNumber} CLEARED", $"+{bonus:N0} bonus   ·   health restored" + (revived ? "   ·   team revived" : ""), 2.2f);
             Sfx.Play("wave_clear");
-            Player.Hp = Mathf.Min(Player.MaxHp, Player.Hp + Player.MaxHp * 0.25f);
+            foreach (var p in Players) p.Hp = Mathf.Min(p.MaxHp, p.Hp + p.MaxHp * 0.25f);
             _breakTimer = 7f;
         }
+    }
+
+    const float ReviveRange = 2.2f, ReviveTime = 2f;
+
+    /// A teammate standing next to a downed player and holding (X) brings them back up.
+    void ReviveProcess(float dt)
+    {
+        foreach (var p in Players)
+        {
+            if (!p.Downed) continue;
+            var helper = Reviver(p);
+            if (helper == null) { p.ReviveProgress = Mathf.Max(0, p.ReviveProgress - dt / ReviveTime); continue; }
+            p.BleedOut += dt; // the clock stops while someone is helping
+            p.ReviveProgress += dt / ReviveTime;
+            if (p.ReviveProgress >= 1f)
+            {
+                p.Revive(0.4f);
+                Toast($"{helper.Def.Name} REVIVED {p.Def.Name}", new Color(0.5f, 1f, 0.5f));
+                AddScore(200, p.GlobalPosition + Vector3.Up * 2f);
+            }
+        }
+    }
+
+    /// Teammate currently reviving `downed` (on their feet, in range, holding reload), or null.
+    public Player Reviver(Player downed)
+    {
+        foreach (var o in Players)
+            if (o != downed && o.Targetable && o.In.Pressed("reload") && o.GlobalPosition.DistanceTo(downed.GlobalPosition) < ReviveRange)
+                return o;
+        return null;
+    }
+
+    /// Downed teammate close enough for `p` to revive, or null.
+    public Player DownedNear(Player p)
+    {
+        foreach (var o in Players)
+            if (o != p && o.Downed && o.GlobalPosition.DistanceTo(p.GlobalPosition) < ReviveRange)
+                return o;
+        return null;
     }
 }

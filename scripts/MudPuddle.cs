@@ -20,6 +20,8 @@ public partial class MudPuddle : Node3D
     StandardMaterial3D _mat;
     CpuParticles3D _fire;
     OmniLight3D _light;
+    /// Who lit this puddle (kill credit for the burn), if anyone.
+    Player _igniter;
 
     public static Vector3? FindFloor(PhysicsDirectSpaceState3D space, Vector3 from, float depth = 8f)
     {
@@ -43,10 +45,10 @@ public partial class MudPuddle : Node3D
     }
 
     /// Ignite every puddle touched by a fire of the given radius at `pos`.
-    public static void IgniteAt(Vector3 pos, float radius)
+    public static void IgniteAt(Vector3 pos, float radius, Player source = null)
     {
         foreach (var p in All.ToArray())
-            if (!p.Burning && p.Touches(pos, radius)) p.Ignite();
+            if (!p.Burning && p.Touches(pos, radius)) p.Ignite(source);
     }
 
     static float Flat(Vector3 v) => new Vector2(v.X, v.Z).Length();
@@ -93,9 +95,10 @@ public partial class MudPuddle : Node3D
         _visual.CreateTween().TweenProperty(_visual, "scale", new Vector3(Radius, 1f, Radius), 0.15f);
     }
 
-    public void Ignite()
+    public void Ignite(Player source = null)
     {
         if (Burning || _dying) return;
+        _igniter = source;
         _burnT = 0f;
         _spreadCd = 0.15f;
         _fire = new CpuParticles3D
@@ -130,7 +133,7 @@ public partial class MudPuddle : Node3D
             {
                 if (z.Dead || !Touches(z.GlobalPosition, 0.3f)) continue;
                 z.Slow(SlowMul, 0.35f);
-                if (z.Burning) { Ignite(); break; } // a burning zombie wading in lights the mud
+                if (z.Burning) { Ignite(z.BurnSource); break; } // a burning zombie wading in lights the mud
             }
             return;
         }
@@ -143,7 +146,7 @@ public partial class MudPuddle : Node3D
         {
             if (z.Dead || !Touches(z.GlobalPosition, 0.3f)) continue;
             z.Slow(SlowMul, 0.35f);
-            z.Ignite(BurnDps, ZombieBurnTime);
+            z.Ignite(BurnDps, ZombieBurnTime, _igniter);
         }
         // spread the fire along connected mud
         _spreadCd -= dt;
@@ -151,7 +154,7 @@ public partial class MudPuddle : Node3D
         {
             _spreadCd = 0.15f;
             foreach (var p in All.ToArray())
-                if (p != this && !p.Burning && p.Touches(GlobalPosition, Radius + 0.4f)) p.Ignite();
+                if (p != this && !p.Burning && p.Touches(GlobalPosition, Radius + 0.4f)) p.Ignite(_igniter);
         }
         if (_burnT >= BurnTime) Remove();
     }

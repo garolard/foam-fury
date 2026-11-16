@@ -59,8 +59,16 @@ public partial class Pickup : Node3D
         if (_life < 4f) Visible = Mathf.PosMod(_life, 0.25f) > 0.1f;
         if (_life <= 0) { QueueFree(); return; }
 
-        var pl = main.Player;
-        if (pl == null || pl.Dead) return;
+        // nearest player on their feet gets the magnet (and the loot)
+        Player pl = null;
+        float best = float.MaxValue;
+        foreach (var p in main.Players)
+        {
+            if (!p.Targetable) continue;
+            float d2 = p.GlobalPosition.DistanceSquaredTo(GlobalPosition);
+            if (d2 < best) { best = d2; pl = p; }
+        }
+        if (pl == null) return;
         var to = pl.GlobalPosition + Vector3.Up * 0.6f - GlobalPosition;
         float d = to.Length();
         if (d < 3.5f && _grounded)

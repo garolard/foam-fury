@@ -16,7 +16,7 @@ public partial class Crosshair : Control
 
     public override void _Draw()
     {
-        if (Player == null || Player.Dead) return;
+        if (Player == null || Player.Dead || Player.Downed) return;
         var c = Size / 2f;
         float gap = 7f + Player.Spread * 4.5f;
         var col = Player.AimingAtEnemy ? new Color(1f, 0.3f, 0.25f) : Colors.White;
@@ -56,6 +56,14 @@ public partial class Hud : CanvasLayer
     Control _dash;
     float _hurt, _lowPulse;
     Tween _bannerTween;
+    // split-screen: the HUD is laid out on a larger virtual canvas and scaled down into the player's view
+    Control _root;
+    float _uiScale = 1f;
+    // co-op: downed / revive panel
+    Control _downBox;
+    Label _downTitle, _downSub;
+    ProgressBar _reviveBar;
+    bool _greyTint;
 
     public static Label MakeLabel(string text, int size, Color? color = null, int outline = 8, HorizontalAlignment align = HorizontalAlignment.Left)
     {
@@ -71,13 +79,15 @@ public partial class Hud : CanvasLayer
         };
     }
 
-    public void Init(Player p)
+    public void Init(Player p, float uiScale = 1f)
     {
         _player = p;
         Layer = 5;
-        var root = new Control { MouseFilter = Control.MouseFilterEnum.Ignore };
-        root.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        _uiScale = uiScale;
+        var root = _root = new Control { MouseFilter = Control.MouseFilterEnum.Ignore };
+        if (uiScale >= 1f) root.SetAnchorsPreset(Control.LayoutPreset.FullRect);
         AddChild(root);
+        if (uiScale < 1f) { root.Scale = Vector2.One * uiScale; FitRoot(); }
 
         _vignette = new ColorRect { MouseFilter = Control.MouseFilterEnum.Ignore };
         _vignette.SetAnchorsPreset(Control.LayoutPreset.FullRect);
@@ -192,7 +202,26 @@ void fragment() {
         _hint.AnchorLeft = 0.5f; _hint.AnchorRight = 0.5f; _hint.AnchorTop = 0.56f; _hint.AnchorBottom = 0.56f;
         _hint.OffsetLeft = -200; _hint.OffsetRight = 200;
 
+        // ---- co-op: downed / reviving panel ----
+        _downBox = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center, MouseFilter = Control.MouseFilterEnum.Ignore };
+        root.AddChild(_downBox);
+        _downBox.AnchorLeft = 0.5f; _downBox.AnchorRight = 0.5f; _downBox.AnchorTop = 0.4f; _downBox.AnchorBottom = 0.4f;
+        _downBox.OffsetLeft = -320; _downBox.OffsetRight = 320;
+        _downTitle = MakeLabel("", 56, new Color(1f, 0.35f, 0.3f), 12, HorizontalAlignment.Center);
+        _downSub = MakeLabel("", 24, Colors.White, 7, HorizontalAlignment.Center);
+        _reviveBar = new ProgressBar { MinValue = 0, MaxValue = 1, ShowPercentage = false, CustomMinimumSize = new Vector2(360, 22), SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter };
+        _reviveBar.AddThemeStyleboxOverride("background", Box(new Color(0.08f, 0.05f, 0.08f, 0.75f), 6, 2, new Color(0, 0, 0, 0.8f)));
+        _reviveBar.AddThemeStyleboxOverride("fill", Box(new Color(0.45f, 1f, 0.45f), 6));
+        _downBox.AddChild(_downTitle); _downBox.AddChild(_downSub); _downBox.AddChild(_reviveBar);
+        _downBox.Visible = false;
+
         WeaponChanged();
+    }
+
+    void FitRoot()
+    {
+        var size = GetViewport().GetVisibleRect().Size / _uiScale;
+        if (_root.Size != size) _root.Size = size;
     }
 
     public static Button MakeButton(string text, int fontSize = 30, Vector2? size = null)
@@ -269,6 +298,7 @@ void fragment() {
         if (_player == null) return;
         float dt = (float)delta;
         var m = Main.Instance;
+        if (_uiScale < 1f) FitRoot();
         _hp.Value = _player.Hp / _player.MaxHp;
         _hpText.Text = $"{Mathf.CeilToInt(_player.Hp)} / {_player.MaxHp}";
         int i = _player.WeaponIndex;
@@ -293,9 +323,57 @@ void fragment() {
         else if (_player.Mag[i] <= _player.Weapon.MagSize / 4) _hint.Text = "RELOAD (X)";
         else _hint.Text = "";
 
+        CoopStatus(m);
+
         _hurt = Mathf.Max(0, _hurt - dt * 1.5f);
         float low = _player.Hp / _player.MaxHp < 0.3f && !_player.Dead ? 0.35f + 0.15f * Mathf.Sin(Time.GetTicksMsec() * 0.008f) : 0f;
-        _vigMat.SetShaderParameter("amount", Mathf.Clamp(Mathf.Max(_hurt, low), 0, 1));
-        Visible = !_player.Dead || _hurt > 0;
+        bool grey = _player.Downed || _player.Dead;
+        if (grey != _greyTint)
+        {
+            _greyTint = grey;
+            _vigMat.SetShaderParameter("tint", grey ? new Color(0.12f, 0.12f, 0.14f) : new Color(0.8f, 0f, 0.05f));
+        }
+        float amount = grey ? 0.85f : Mathf.Max(_hurt, low);
+        _vigMat.SetShaderParameter("amount", Mathf.Clamp(amount, 0, 1));
+        // solo: the HUD fades with the death; co-op: a fallen player keeps watching the team's run
+        Visible = !_player.Dead || _hurt > 0 || m.Coop;
+    }
+
+    /// Downed countdown for this player, or a revive prompt when standing next to a downed teammate.
+    void CoopStatus(Main m)
+    {
+        if (!m.Coop) return;
+        string key = _player.UsingPad ? "X" : "R";
+        if (_player.Downed)
+        {
+            _downBox.Visible = true;
+            _downTitle.Text = "YOU'RE DOWN!";
+            _downTitle.LabelSettings.FontColor = new Color(1f, 0.35f, 0.3f);
+            var helper = m.Reviver(_player);
+            _downSub.Text = helper != null ? $"{helper.Def.Name} IS REVIVING YOU…" : $"BLEEDING OUT  {Mathf.CeilToInt(_player.BleedOut)}s   ·   CRAWL TO A TEAMMATE";
+            _reviveBar.Visible = _player.ReviveProgress > 0;
+            _reviveBar.Value = _player.ReviveProgress;
+            _hint.Text = "";
+        }
+        else if (_player.Dead)
+        {
+            _downBox.Visible = true;
+            _downTitle.Text = "BLED OUT";
+            _downTitle.LabelSettings.FontColor = new Color(0.8f, 0.7f, 0.75f);
+            _downSub.Text = "YOU'LL BE BACK WHEN THE WAVE IS CLEARED";
+            _reviveBar.Visible = false;
+            _hint.Text = "";
+        }
+        else if (m.DownedNear(_player) is { } mate)
+        {
+            _downBox.Visible = true;
+            bool reviving = m.Reviver(mate) == _player;
+            _downTitle.Text = reviving ? $"REVIVING {mate.Def.Name}" : $"HOLD ({key})  REVIVE {mate.Def.Name}";
+            _downTitle.LabelSettings.FontColor = new Color(0.5f, 1f, 0.5f);
+            _downSub.Text = $"{Mathf.CeilToInt(mate.BleedOut)}s LEFT";
+            _reviveBar.Visible = true;
+            _reviveBar.Value = mate.ReviveProgress;
+        }
+        else _downBox.Visible = false;
     }
 }

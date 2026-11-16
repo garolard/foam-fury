@@ -16,9 +16,20 @@ public partial class Player : CharacterBody3D
     public float DashReady = 1f;
     public bool UsingPad = true;
     public Vector3 AimPoint;
+    /// Co-op: knocked down, waiting for a teammate to revive before bleeding out.
+    public bool Downed;
+    public float BleedOut, ReviveProgress;
+    public int Kills;
+    public const float BleedTime = 15f;
+    /// Zombies chase and hit only players that are on their feet.
+    public bool Targetable => !Dead && !Downed;
 
     public CharacterModel Model;
+    public PlayerInput In;
+    public CameraRig Rig => _rig;
+    public Hud Hud => _hud;
     CameraRig _rig;
+    Hud _hud;
     Node3D _gun;
     float _muzzleDist;
     float _fireCd, _reloadTimer, _lastShot = 10f, _armBlend, _yaw, _invuln, _sinceHurt = 10f;
@@ -32,10 +43,14 @@ public partial class Player : CharacterBody3D
 
     public WeaponDef Weapon => Weapons[WeaponIndex];
 
-    public void Setup(CharacterDef def, CameraRig rig)
+    public void Setup(CharacterDef def, CameraRig rig, PlayerInput input, Hud hud)
     {
         Def = def;
         _rig = rig;
+        In = input;
+        _hud = hud;
+        // a dedicated pad (co-op) is always a pad; the solo "any device" slot auto-detects in _Input
+        UsingPad = input.Pad >= 0 || !input.Kbm;
         MaxHp = Hp = def.MaxHp;
         Grenades = def.Grenades;
         Weapons = def.Signature != null ? [.. GameData.Weapons, def.Signature] : GameData.Weapons;
@@ -87,21 +102,23 @@ public partial class Player : CharacterBody3D
         }
         _muzzleDist = -minZ * s;
         if (!force) Sfx.Play("reload", -6f);
-        Main.Instance.Hud?.WeaponChanged();
+        _hud?.WeaponChanged();
     }
 
     public override void _Input(InputEvent e)
     {
+        // only the solo "any device" slot mixes pad and keyboard+mouse
+        if (In.Pad != InputSetup.AnyPad || !In.Kbm) return;
         if (e is InputEventJoypadButton || (e is InputEventJoypadMotion jm && Mathf.Abs(jm.AxisValue) > 0.3f)) UsingPad = true;
         else if (e is InputEventMouseMotion || e is InputEventKey || e is InputEventMouseButton) UsingPad = false;
     }
 
     public override void _UnhandledInput(InputEvent e)
     {
-        if (Dead) return;
+        if (Dead || !In.Kbm) return;
         if (e is InputEventMouseMotion mm && Input.MouseMode == Input.MouseModeEnum.Captured)
         {
-            float sens = 0.0025f * (Input.IsActionPressed("aim") ? 0.6f : 1f);
+            float sens = 0.0025f * (In.Pressed("aim") ? 0.6f : 1f);
             _rig.Yaw -= mm.Relative.X * sens;
             _rig.Pitch -= mm.Relative.Y * sens;
         }
@@ -117,12 +134,13 @@ public partial class Player : CharacterBody3D
             Velocity = v; MoveAndSlide();
             return;
         }
+        if (Downed) { DownedProcess(dt); return; }
         _lastShot += dt; _fireCd -= dt; _invuln -= dt; _sinceHurt += dt; _dashCd -= dt;
-        bool aiming = Input.IsActionPressed("aim");
+        bool aiming = In.Pressed("aim");
         _rig.Aiming = aiming;
 
         // ----- camera look (stick) -----
-        var look = Input.GetVector("look_left", "look_right", "look_up", "look_down");
+        var look = In.Look;
         look = new Vector2(look.X * Mathf.Abs(look.X), look.Y * Mathf.Abs(look.Y));
         UpdateAimTarget();
         float friction = (UsingPad && AimingAtEnemy) ? 0.45f : 1f;
@@ -141,7 +159,7 @@ public partial class Player : CharacterBody3D
         }
 
         // ----- movement -----
-        var input = Input.GetVector("move_left", "move_right", "move_forward", "move_back");
+        var input = In.Move;
         var camBasis = new Basis(Vector3.Up, _rig.Yaw);
         var move = camBasis * new Vector3(input.X, 0, input.Y);
         if (move.Length() > 1) move = move.Normalized();
@@ -149,13 +167,13 @@ public partial class Player : CharacterBody3D
 
         var vel = Velocity;
         // buffer the press so tapping B slightly early (still on cooldown) isn't swallowed
-        if (Input.IsActionJustPressed("dash")) _dashBuffer = 0.35f;
+        if (In.JustPressed("dash")) _dashBuffer = 0.35f;
         _dashBuffer -= dt;
         if (_dashBuffer > 0 && _dashCd <= 0)
         {
             _dashBuffer = 0;
             _rig.FovKick = 1f;
-            InputSetup.Rumble(0.35f, 0.1f, 0.12f);
+            In.Rumble(0.35f, 0.1f, 0.12f);
             _dashDir = move.LengthSquared() > 0.01f ? move.Normalized() : -camBasis.Z;
             _dashTime = 0.22f * Def.DashMult;
             _dashCd = DashCooldown;
@@ -182,7 +200,7 @@ public partial class Player : CharacterBody3D
         vel.X = hv.X; vel.Z = hv.Z;
         if (IsOnFloor())
         {
-            if (Input.IsActionJustPressed("jump")) { vel.Y = 8.2f; Model.Play("jump", 1.2f, 0.1f); }
+            if (In.JustPressed("jump")) { vel.Y = 8.2f; Model.Play("jump", 1.2f, 0.1f); }
         }
         else vel.Y -= 22f * dt;
         Velocity = vel;
@@ -203,11 +221,11 @@ public partial class Player : CharacterBody3D
         else Model.Play("idle");
 
         // ----- weapons -----
-        if (Input.IsActionJustPressed("weapon_next")) CycleWeapon(1);
-        if (Input.IsActionJustPressed("weapon_prev")) CycleWeapon(-1);
-        for (int i = 0; i < Weapons.Length; i++) if (Input.IsActionJustPressed($"weapon_{i + 1}")) EquipWeapon(i);
+        if (In.JustPressed("weapon_next")) CycleWeapon(1);
+        if (In.JustPressed("weapon_prev")) CycleWeapon(-1);
+        for (int i = 0; i < Weapons.Length; i++) if (In.JustPressed($"weapon_{i + 1}")) EquipWeapon(i);
 
-        if (Input.IsActionJustPressed("reload")) StartReload();
+        if (In.JustPressed("reload")) StartReload();
         if (ReloadProgress >= 0)
         {
             _reloadTimer -= dt;
@@ -215,17 +233,17 @@ public partial class Player : CharacterBody3D
             if (_reloadTimer <= 0) FinishReload();
         }
 
-        bool trigger = Weapon.Auto ? Input.IsActionPressed("fire") : Input.IsActionJustPressed("fire");
+        bool trigger = Weapon.Auto ? In.Pressed("fire") : In.JustPressed("fire");
         if (trigger && _fireCd <= 0 && ReloadProgress < 0)
         {
             if (Mag[WeaponIndex] > 0) Shoot();
-            else if (Input.IsActionJustPressed("fire"))
+            else if (In.JustPressed("fire"))
             {
                 if (!StartReload()) { Sfx.Play("empty"); _fireCd = 0.25f; }
             }
         }
 
-        if (Input.IsActionJustPressed("grenade") && Grenades > 0) ThrowGrenade();
+        if (In.JustPressed("grenade") && Grenades > 0) ThrowGrenade();
 
         _bloom = Mathf.MoveToward(_bloom, 0, dt * 12f);
         float moveSpread = flat > 0.5f ? 1.5f : 1f;
@@ -240,8 +258,8 @@ public partial class Player : CharacterBody3D
     public override void _Process(double delta)
     {
         float dt = (float)delta;
-        if (Dead) return; // the death animation owns the pose now
-        bool armsUp = Input.IsActionPressed("aim") || _lastShot < 0.8f || ReloadProgress >= 0;
+        if (Dead || Downed) return; // the death/downed animation owns the pose now
+        bool armsUp = In.Pressed("aim") || _lastShot < 0.8f || ReloadProgress >= 0;
         _armBlend = Mathf.MoveToward(_armBlend, armsUp ? 1f : 0f, dt * 8f);
         float blend = Mathf.SmoothStep(0, 1, _armBlend);
         _kick *= Mathf.Exp(-14f * dt);
@@ -326,7 +344,7 @@ public partial class Player : CharacterBody3D
         // pad aim assist: magnetic slowdown near enemies
         if (!AimingAtEnemy && UsingPad)
         {
-            var vp = GetViewport().GetVisibleRect().Size;
+            var vp = cam.GetViewport().GetVisibleRect().Size;
             var center = vp / 2f;
             foreach (var z in Main.Instance.Zombies)
             {
@@ -339,7 +357,7 @@ public partial class Player : CharacterBody3D
     void TryAimSnap()
     {
         var cam = _rig.Camera;
-        var vp = GetViewport().GetVisibleRect().Size;
+        var vp = cam.GetViewport().GetVisibleRect().Size;
         var center = vp / 2f;
         Zombie best = null; float bestD = vp.Y * 0.18f;
         foreach (var z in Main.Instance.Zombies)
@@ -412,9 +430,9 @@ public partial class Player : CharacterBody3D
             var dir = ApplySpread(baseDir, Spread);
             switch (w.Kind)
             {
-                case FireKind.Mud: MudGlob.Fire(muzzle, dir, w, Def.DamageMult, GetRid()); break;
-                case FireKind.Flame: FlameJet.Fire(muzzle, dir, Velocity, w, Def.DamageMult); break;
-                default: Projectile.Fire(muzzle, dir, w, Def.DamageMult, GetRid()); break;
+                case FireKind.Mud: MudGlob.Fire(muzzle, dir, w, Def.DamageMult, GetRid(), this); break;
+                case FireKind.Flame: FlameJet.Fire(muzzle, dir, Velocity, w, Def.DamageMult, this); break;
+                default: Projectile.Fire(muzzle, dir, w, Def.DamageMult, GetRid(), this); break;
             }
         }
         if (w.Kind == FireKind.Flame)
@@ -433,7 +451,7 @@ public partial class Player : CharacterBody3D
         _rig.AddTrauma(w.Pellets > 1 ? 0.25f : w.Recoil * 0.04f);
         _bloom = Mathf.Min(_bloom + w.Recoil * 0.6f, 6f);
         _kick = Mathf.Min(1.6f, _kick + 0.35f + w.Recoil * 0.18f);
-        InputSetup.Rumble(0.25f + w.Recoil * 0.06f, w.Pellets > 1 ? 0.6f : 0.1f, 0.08f);
+        In.Rumble(0.25f + w.Recoil * 0.06f, w.Pellets > 1 ? 0.6f : 0.1f, 0.08f);
         if (Mag[WeaponIndex] == 0) StartReload();
     }
 
@@ -453,7 +471,7 @@ public partial class Player : CharacterBody3D
         Grenades--;
         var dir = -_rig.Camera.GlobalBasis.Z;
         var pos = GlobalPosition + Vector3.Up * 1.6f + new Vector3(dir.X, 0, dir.Z).Normalized() * 0.6f;
-        Grenade.Throw(pos, dir * 15f + Vector3.Up * 4.5f + new Vector3(Velocity.X, 0, Velocity.Z) * 0.5f, Def.BlastMult);
+        Grenade.Throw(pos, dir * 15f + Vector3.Up * 4.5f + new Vector3(Velocity.X, 0, Velocity.Z) * 0.5f, Def.BlastMult, this);
         Sfx.Play("throw");
         _throwT = 0f;
         _lastShot = 0.3f;
@@ -461,7 +479,7 @@ public partial class Player : CharacterBody3D
 
     public void TakeDamage(float dmg, Vector3 dir, float knock)
     {
-        if (Dead || _invuln > 0) return;
+        if (Dead || Downed || _invuln > 0) return;
         Hp -= dmg;
         _invuln = 0.45f;
         _sinceHurt = 0;
@@ -469,22 +487,92 @@ public partial class Player : CharacterBody3D
         Model.Flash(0.8f);
         _hurtFlinch = 1f;
         _rig.AddTrauma(0.45f);
-        InputSetup.Rumble(0.6f, 0.8f, 0.25f);
+        In.Rumble(0.6f, 0.8f, 0.25f);
         Sfx.Play("hurt", 0f, 0.1f);
-        Main.Instance.Hud?.Hurt(dmg / MaxHp);
-        if (Hp <= 0) { Hp = 0; Die(dir); }
+        _hud?.Hurt(dmg / MaxHp);
+        if (Hp <= 0)
+        {
+            Hp = 0;
+            if (Main.Instance.Coop) GoDown();
+            else Die(dir);
+        }
     }
 
     void Die(Vector3 dir)
     {
+        if (Downed) { Downed = false; Model.Recover(); }
         Dead = true;
         _gun.Visible = false;
         // hit from behind -> pitch forward onto the face, otherwise get knocked flat on the back
         var flat = new Vector3(dir.X, 0, dir.Z).Normalized();
         bool fromBehind = flat.Dot(Model.GlobalBasis.Z.Normalized()) > 0.3f;
         Model.PlayDeath(fromBehind ? DeathKind.Crumple : DeathKind.FallBack, dir);
-        InputSetup.Rumble(1f, 1f, 0.8f);
-        Main.Instance.OnPlayerDied();
+        In.Rumble(1f, 1f, 0.8f);
+        Main.Instance.OnPlayerDied(this);
+    }
+
+    /// Co-op: knocked down instead of killed. A teammate can revive us before the bleed-out timer runs out.
+    void GoDown()
+    {
+        Downed = true;
+        BleedOut = BleedTime;
+        ReviveProgress = 0;
+        ReloadProgress = -1f;
+        _dashTime = 0; _snapT = -1f; _throwT = -1f;
+        _knock = Vector3.Zero;
+        _gun.Visible = false;
+        _rig.Aiming = false;
+        Model.PlayDowned();
+        In.Rumble(1f, 0.8f, 0.5f);
+        Main.Instance.OnPlayerDowned(this);
+    }
+
+    /// Back on the feet (teammate revive, or wave clear for the downed and the dead).
+    public void Revive(float hpFrac)
+    {
+        if (!Downed && !Dead) return;
+        Downed = false;
+        Dead = false;
+        ReviveProgress = 0;
+        Hp = Mathf.Max(1f, MaxHp * hpFrac);
+        _invuln = 1.5f;
+        _knock = Vector3.Zero;
+        Velocity = Vector3.Zero;
+        Model.Recover();
+        _gun.Visible = true;
+        Sfx.Play("pickup", -2f);
+        In.Rumble(0.3f, 0.3f, 0.2f);
+    }
+
+    /// While downed: bleed out, look around, crawl slowly toward help.
+    void DownedProcess(float dt)
+    {
+        BleedOut -= dt;
+        if (BleedOut <= 0)
+        {
+            // fall forward from the slump
+            Die(Model.GlobalBasis.Z);
+            return;
+        }
+        var look = In.Look;
+        _rig.Yaw -= look.X * Mathf.Abs(look.X) * 3.6f * dt;
+        _rig.Pitch -= look.Y * Mathf.Abs(look.Y) * 2.4f * dt;
+        _rig.Aiming = false;
+
+        var input = In.Move;
+        var move = new Basis(Vector3.Up, _rig.Yaw) * new Vector3(input.X, 0, input.Y);
+        if (move.Length() > 1) move = move.Normalized();
+        var vel = Velocity;
+        var hv = new Vector3(vel.X, 0, vel.Z).MoveToward(move * 1.2f, 20f * dt);
+        vel.X = hv.X; vel.Z = hv.Z;
+        if (!IsOnFloor()) vel.Y -= 22f * dt;
+        Velocity = vel;
+        MoveAndSlide();
+        if (move.LengthSquared() > 0.01f)
+        {
+            _yaw = Mathf.LerpAngle(_yaw, Mathf.Atan2(move.X, move.Z), Mathf.Min(1, dt * 4f));
+            Model.Rotation = new Vector3(0, _yaw, 0);
+        }
     }
 
     public bool TryCollect(PickupKind kind)
@@ -494,24 +582,24 @@ public partial class Player : CharacterBody3D
             case PickupKind.Health:
                 if (Hp >= MaxHp) return false;
                 Hp = Mathf.Min(MaxHp, Hp + MaxHp * 0.35f);
-                Main.Instance.Hud?.Toast("+HEALTH", new Color(1f, 0.35f, 0.4f));
+                _hud?.Toast("+HEALTH", new Color(1f, 0.35f, 0.4f));
                 break;
             case PickupKind.Ammo:
                 for (int i = 0; i < Weapons.Length; i++)
                     if (Reserve[i] >= 0) Reserve[i] = Mathf.Min(Weapons[i].MaxReserve, Reserve[i] + Weapons[i].AmmoPickup);
-                Main.Instance.Hud?.Toast("+AMMO", new Color(1f, 0.8f, 0.2f));
+                _hud?.Toast("+AMMO", new Color(1f, 0.8f, 0.2f));
                 break;
             case PickupKind.Grenade:
                 if (Grenades >= 9) return false;
                 Grenades++;
-                Main.Instance.Hud?.Toast("+GRENADE", new Color(0.4f, 1f, 0.4f));
+                _hud?.Toast("+GRENADE", new Color(0.4f, 1f, 0.4f));
                 break;
             case PickupKind.Coin:
                 Main.Instance.AddScore(250, GlobalPosition + Vector3.Up * 2f);
                 break;
         }
         Sfx.Play("pickup", -2f);
-        InputSetup.Rumble(0.2f, 0f, 0.06f);
+        In.Rumble(0.2f, 0f, 0.06f);
         return true;
     }
 }

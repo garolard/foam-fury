@@ -5,10 +5,11 @@ public partial class Grenade : RigidBody3D
     float _fuse = 1.5f;
     float _radius = 5.5f, _damage = 160f;
     MeshInstance3D _blink;
+    Player _source;
 
-    public static void Throw(Vector3 pos, Vector3 vel, float blastMult)
+    public static void Throw(Vector3 pos, Vector3 vel, float blastMult, Player source = null)
     {
-        var g = new Grenade();
+        var g = new Grenade { _source = source };
         g._radius *= Mathf.Sqrt(blastMult);
         g._damage *= blastMult;
         Main.Instance.World.AddChild(g);
@@ -47,17 +48,16 @@ public partial class Grenade : RigidBody3D
     {
         var pos = GlobalPosition;
         Fx.Explosion(pos, _radius);
-        MudPuddle.IgniteAt(pos, _radius * 0.8f);
+        MudPuddle.IgniteAt(pos, _radius * 0.8f, _source);
         Sfx.Play3D("explosion", pos, 4f, 0.1f);
-        Main.Instance.Rig?.AddTrauma(0.7f);
-        InputSetup.Rumble(0.8f, 1f, 0.45f);
+        Main.Instance.Shake(pos, 0.7f, 0.8f, 1f, 0.45f);
         foreach (var z in Main.Instance.Zombies.ToArray())
         {
             float d = z.GlobalPosition.DistanceTo(pos);
             if (d > _radius || z.Dead) continue;
             float f = 1f - d / _radius * 0.6f;
             var dir = (z.GlobalPosition - pos).Normalized();
-            z.TakeDamage(_damage * f, z.GlobalPosition + Vector3.Up, dir, false, 14f * f, true);
+            z.TakeDamage(_damage * f, z.GlobalPosition + Vector3.Up, dir, false, 14f * f, true, source: _source);
         }
         QueueFree();
     }

@@ -1,4 +1,5 @@
 using Godot;
+using System.Collections.Generic;
 
 public enum FireKind { Dart, Mud, Flame }
 
@@ -90,20 +91,29 @@ public static class GameData
     public static int SelectedCharacter = 0;
     public static int SelectedMap = 0;
     public static bool SkipMenu = false;
-    /// Menu screen to open on (0 title, 1 survivor select, 2 stage select).
+    /// Menu screen to open on (see MainMenu.Screen: 0 title, 1 survivor select, 2 stage select, 3 co-op lobby).
     public static int MenuStart = 0;
 
-    public static int LoadBest(int map)
+    /// Local co-op players for the next run (empty = single player). Survives scene reloads so RETRY keeps the team.
+    public static readonly List<PlayerSlot> Slots = new();
+    public static bool Coop => Slots.Count > 1;
+
+    static string BestKey(int map, bool coop) => coop ? $"coop_best_{map}" : $"best_{map}";
+
+    public static int LoadBest(int map, bool coop = false)
     {
         var cfg = new ConfigFile();
-        return cfg.Load("user://save.cfg") == Error.Ok ? (int)cfg.GetValue("score", $"best_{map}", 0) : 0;
+        return cfg.Load("user://save.cfg") == Error.Ok ? (int)cfg.GetValue("score", BestKey(map, coop), 0) : 0;
     }
 
-    public static void SaveBest(int map, int score)
+    public static void SaveBest(int map, int score, bool coop = false)
     {
         var cfg = new ConfigFile();
         cfg.Load("user://save.cfg");
-        cfg.SetValue("score", $"best_{map}", score);
+        cfg.SetValue("score", BestKey(map, coop), score);
         cfg.Save("user://save.cfg");
     }
 }
+
+/// One local player: which pad drives them (-1 = any pad), whether they use keyboard+mouse, and their survivor.
+public record PlayerSlot(int Pad, bool Kbm, int Character);

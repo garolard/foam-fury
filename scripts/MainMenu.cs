@@ -95,12 +95,12 @@ public partial class StatBar : Control
     }
 }
 
-/// Front end: title -> survivor select -> stage select.
+/// Front end: title -> survivor select (or co-op lobby) -> stage select.
 public partial class MainMenu : CanvasLayer
 {
-    public enum Screen { Title, Survivor, Stage }
+    public enum Screen { Title, Survivor, Stage, Lobby }
 
-    /// (character, map) when the player starts a run.
+    /// (character, map) when the player starts a run. Co-op runs also fill GameData.Slots.
     public event Action<int, int> Finished;
     /// Map to show behind the menu; raised once the stage carousel settles on a new stage.
     public event Action<int> BackdropChanged;
@@ -118,7 +118,7 @@ public partial class MainMenu : CanvasLayer
     readonly List<CharacterModel> _models = new();
     readonly List<MapBase> _minis = new();
     Button _single, _multi;
-    Label _soon, _footer, _arrowL, _arrowR;
+    Label _footer, _arrowL, _arrowR;
     readonly Label[] _crumbs = new Label[3];
     float _cool, _settle;
     int _backdrop;
@@ -133,6 +133,19 @@ public partial class MainMenu : CanvasLayer
     readonly List<(StatBar bar, Label value)> _cStats = new();
     // stage card
     Label _sIndex, _sName, _sSub, _sBest, _sGates, _sRise;
+
+    // co-op lobby: who joined (by device) and which survivor they picked
+    class Joined { public int Device, Character; }
+    const int KeyboardDevice = -100;
+    static readonly Color[] TeamColors = { new(1f, 0.8f, 0.3f), new(0.35f, 0.85f, 1f), new(1f, 0.45f, 0.7f), new(0.55f, 1f, 0.45f) };
+    readonly List<Joined> _team = new();
+    readonly Dictionary<int, float> _stickX = new();
+    bool _coop;
+    Control _lobbyUi;
+    Label _lobbyMsg;
+    readonly PanelContainer[] _cardPanel = new PanelContainer[4];
+    readonly Label[] _cardDevice = new Label[4], _cardName = new Label[4], _cardTitle = new Label[4], _cardPerk = new Label[4],
+        _cardWeapon = new Label[4], _cardJoin = new Label[4];
 
     public MainMenu() { Layer = 10; }
 
@@ -163,6 +176,13 @@ public partial class MainMenu : CanvasLayer
 
         BuildTitle();
         BuildPicker();
+        BuildLobby();
+        if (start == Screen.Lobby || (start != Screen.Title && GameData.Coop))
+        {
+            _coop = true;
+            foreach (var sl in GameData.Slots)
+                _team.Add(new Joined { Device = sl.Kbm ? KeyboardDevice : sl.Pad, Character = sl.Character });
+        }
         _chars.Select(GameData.SelectedCharacter);
         _maps.Select(GameData.SelectedMap);
         Go(start, true);
@@ -331,11 +351,10 @@ public partial class MainMenu : CanvasLayer
         col.AddThemeConstantOverride("separation", 18);
         _titleUi.AddChild(col);
         _single = Hud.MakeButton("SINGLE PLAYER", 36, new Vector2(480, 80));
-        _multi = Hud.MakeButton("MULTIPLAYER", 36, new Vector2(480, 80));
-        _multi.AddThemeColorOverride("font_color", Dim);
-        var tag = Hud.MakeLabel("SOON", 18, Gold, 5);
+        _multi = Hud.MakeButton("LOCAL CO-OP", 36, new Vector2(480, 80));
+        var tag = Hud.MakeLabel("2-4", 18, Gold, 5);
         tag.SetAnchorsPreset(Control.LayoutPreset.CenterRight);
-        tag.OffsetLeft = -78; tag.OffsetTop = -14; tag.Rotation = Mathf.DegToRad(-8);
+        tag.OffsetLeft = -64; tag.OffsetTop = -14; tag.Rotation = Mathf.DegToRad(-8);
         _multi.AddChild(tag);
         foreach (var b in new[] { _single, _multi })
         {
@@ -344,33 +363,215 @@ public partial class MainMenu : CanvasLayer
             b.PivotOffset = new Vector2(240, 40);
             col.AddChild(b);
         }
-        _single.Pressed += () => { if (_cool > 0) return; Sfx.Play("ui_select"); Go(Screen.Survivor); };
-        _multi.Pressed += ComingSoon;
-        _soon = Hud.MakeLabel("ONLINE MULTIPLAYER IS COMING SOON", 24, Gold, 8, HorizontalAlignment.Center);
-        _soon.Modulate = new Color(1, 1, 1, 0);
-        col.AddChild(_soon);
+        _single.Pressed += () =>
+        {
+            if (_cool > 0) return;
+            Sfx.Play("ui_select");
+            _coop = false;
+            GameData.Slots.Clear();
+            Go(Screen.Survivor);
+        };
+        _multi.Pressed += () =>
+        {
+            if (_cool > 0) return;
+            Sfx.Play("ui_select");
+            _coop = true;
+            Go(Screen.Lobby);
+        };
 
         var help = new VBoxContainer();
         _titleUi.AddChild(help);
         help.AnchorLeft = 1; help.AnchorRight = 1; help.AnchorTop = 1; help.AnchorBottom = 1;
-        help.OffsetLeft = -480; help.OffsetRight = -44; help.OffsetTop = -270; help.OffsetBottom = -36;
+        help.OffsetLeft = -520; help.OffsetRight = -44; help.OffsetTop = -300; help.OffsetBottom = -36;
         help.Alignment = BoxContainer.AlignmentMode.End;
         help.AddChild(Hud.MakeLabel("CONTROLS", 24, Gold, 8, HorizontalAlignment.Right));
         foreach (var line in new[] {
             "LS  move     RS  look", "RT  fire     LT  aim (snaps to target)", "A  jump     B  dash", "X  reload     Y  grenade",
-            "LB / RB  switch blaster     START  pause", "keyboard + mouse also supported" })
+            "LB / RB  switch blaster     START  pause", "co-op: hold X near a downed friend to revive", "keyboard + mouse also supported" })
             help.AddChild(Hud.MakeLabel(line, 18, new Color(0.9f, 0.9f, 0.95f), 6, HorizontalAlignment.Right));
     }
 
-    void ComingSoon()
+    // ------------------------------------------------------------------ co-op lobby
+    void BuildLobby()
     {
-        Sfx.Play("ui_move", -2f, 0f);
-        var wig = _multi.CreateTween();
-        foreach (float a in new[] { 3f, -3f, 2f, -1f, 0f }) wig.TweenProperty(_multi, "rotation", Mathf.DegToRad(a), 0.05f);
-        _soon.Modulate = Colors.White;
-        var fade = _soon.CreateTween();
-        fade.TweenInterval(1.2f);
-        fade.TweenProperty(_soon, "modulate:a", 0f, 0.5f);
+        _lobbyUi = new Control { MouseFilter = Control.MouseFilterEnum.Ignore };
+        _lobbyUi.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        _pickUi.AddChild(_lobbyUi);
+        var row = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center, MouseFilter = Control.MouseFilterEnum.Ignore };
+        row.AnchorLeft = 0.04f; row.AnchorRight = 0.96f; row.AnchorTop = 0.17f; row.AnchorBottom = 0.8f;
+        row.AddThemeConstantOverride("separation", 24);
+        _lobbyUi.AddChild(row);
+        for (int i = 0; i < 4; i++)
+        {
+            var panel = _cardPanel[i] = new PanelContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, MouseFilter = Control.MouseFilterEnum.Ignore };
+            var sb = Hud.Box(new Color(0.08f, 0.05f, 0.1f, 0.85f), 14, 3, TeamColors[i]);
+            sb.ContentMarginLeft = sb.ContentMarginRight = 20; sb.ContentMarginTop = sb.ContentMarginBottom = 18;
+            panel.AddThemeStyleboxOverride("panel", sb);
+            row.AddChild(panel);
+            var box = new VBoxContainer();
+            box.AddThemeConstantOverride("separation", 6);
+            panel.AddChild(box);
+            box.AddChild(Hud.MakeLabel($"P{i + 1}", 48, TeamColors[i], 10));
+            _cardDevice[i] = Add(box, Hud.MakeLabel("", 20, Dim, 5));
+            Add(box, new Control { CustomMinimumSize = new Vector2(0, 18) });
+            _cardName[i] = Add(box, Hud.MakeLabel("", 76, Colors.White, 14));
+            _cardTitle[i] = Add(box, Hud.MakeLabel("", 26, Gold, 7));
+            _cardPerk[i] = Add(box, Hud.MakeLabel("", 20, Mint, 5));
+            _cardPerk[i].AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            _cardWeapon[i] = Add(box, Hud.MakeLabel("", 20, Soft, 5));
+            _cardWeapon[i].AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            _cardJoin[i] = Add(box, Hud.MakeLabel("PRESS  (A)\nOR  ENTER\nTO JOIN", 30, Soft, 7, HorizontalAlignment.Center));
+            _cardJoin[i].SizeFlagsVertical = Control.SizeFlags.ExpandFill;
+            _cardJoin[i].VerticalAlignment = VerticalAlignment.Center;
+        }
+        _lobbyMsg = Hud.MakeLabel("", 26, Gold, 8, HorizontalAlignment.Center);
+        _lobbyMsg.AnchorLeft = 0; _lobbyMsg.AnchorRight = 1; _lobbyMsg.AnchorTop = 0.83f; _lobbyMsg.AnchorBottom = 0.83f;
+        _lobbyMsg.Modulate = new Color(1, 1, 1, 0);
+        _lobbyUi.AddChild(_lobbyMsg);
+        _lobbyUi.Visible = false;
+    }
+
+    void RefreshLobby()
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            bool on = i < _team.Count;
+            _cardPanel[i].Modulate = on ? Colors.White : new Color(1, 1, 1, 0.55f);
+            _cardJoin[i].Visible = !on;
+            foreach (var l in new[] { _cardName[i], _cardTitle[i], _cardPerk[i], _cardWeapon[i] }) l.Visible = on;
+            if (!on) { _cardDevice[i].Text = ""; continue; }
+            var t = _team[i];
+            var c = GameData.Characters[t.Character];
+            _cardDevice[i].Text = t.Device == KeyboardDevice ? "KEYBOARD + MOUSE" : $"CONTROLLER {t.Device + 1}";
+            _cardName[i].Text = $"◀ {c.Name} ▶";
+            _cardTitle[i].Text = c.Title.ToUpper();
+            _cardPerk[i].Text = "★  " + c.Perk.ToUpper();
+            _cardWeapon[i].Text = c.Signature != null ? $"SIGNATURE: {c.Signature.Name.ToUpper()}" : "";
+        }
+    }
+
+    void LobbyMessage(string text)
+    {
+        _lobbyMsg.Text = text;
+        _lobbyMsg.Modulate = Colors.White;
+        var tw = _lobbyMsg.CreateTween();
+        tw.TweenInterval(1.4f);
+        tw.TweenProperty(_lobbyMsg, "modulate:a", 0f, 0.5f);
+    }
+
+    enum LobbyCmd { Accept, Back, Left, Right, Start }
+
+    /// Lobby input is per device (global actions can't tell who pressed what).
+    public override void _Input(InputEvent e)
+    {
+        if (!Decode(e, out int dev, out var cmd)) return;
+        if (_screen != Screen.Lobby || _done || _cool > 0) return;
+        GetViewport().SetInputAsHandled();
+        int idx = _team.FindIndex(t => t.Device == dev);
+        switch (cmd)
+        {
+            case LobbyCmd.Accept when idx < 0:
+            case LobbyCmd.Start when idx < 0:
+                Join(dev);
+                break;
+            case LobbyCmd.Accept when idx == 0:
+            case LobbyCmd.Start:
+                TryStart();
+                break;
+            case LobbyCmd.Back when idx >= 0:
+                _team.RemoveAt(idx);
+                Sfx.Play("ui_move");
+                RefreshLobby();
+                break;
+            case LobbyCmd.Back when _team.Count == 0:
+                Sfx.Play("ui_move");
+                Go(Screen.Title);
+                break;
+            case LobbyCmd.Left when idx >= 0:
+            case LobbyCmd.Right when idx >= 0:
+            {
+                int n = GameData.Characters.Length;
+                var t = _team[idx];
+                t.Character = (t.Character + (cmd == LobbyCmd.Left ? -1 : 1) + n) % n;
+                Sfx.Play("ui_move");
+                RefreshLobby();
+                Pop(_cardName[idx]);
+                break;
+            }
+        }
+    }
+
+    bool Decode(InputEvent e, out int dev, out LobbyCmd cmd)
+    {
+        dev = 0; cmd = LobbyCmd.Accept;
+        switch (e)
+        {
+            case InputEventJoypadButton jb when jb.Pressed:
+                dev = jb.Device;
+                switch (jb.ButtonIndex)
+                {
+                    case JoyButton.A: cmd = LobbyCmd.Accept; return true;
+                    case JoyButton.B: cmd = LobbyCmd.Back; return true;
+                    case JoyButton.Start: cmd = LobbyCmd.Start; return true;
+                    case JoyButton.DpadLeft: cmd = LobbyCmd.Left; return true;
+                    case JoyButton.DpadRight: cmd = LobbyCmd.Right; return true;
+                }
+                return false;
+            case InputEventJoypadMotion jm when jm.Axis == JoyAxis.LeftX:
+            {
+                // edge-trigger the stick per pad so holding it doesn't scroll
+                float prev = _stickX.GetValueOrDefault(jm.Device);
+                _stickX[jm.Device] = jm.AxisValue;
+                if (Mathf.Abs(prev) >= 0.6f || Mathf.Abs(jm.AxisValue) < 0.6f) return false;
+                dev = jm.Device;
+                cmd = jm.AxisValue < 0 ? LobbyCmd.Left : LobbyCmd.Right;
+                return true;
+            }
+            case InputEventKey k when k.Pressed && !k.Echo:
+                dev = KeyboardDevice;
+                switch (k.PhysicalKeycode)
+                {
+                    case Key.Enter: case Key.KpEnter: case Key.Space: cmd = LobbyCmd.Accept; return true;
+                    case Key.Escape: case Key.Backspace: cmd = LobbyCmd.Back; return true;
+                    case Key.A: case Key.Left: cmd = LobbyCmd.Left; return true;
+                    case Key.D: case Key.Right: cmd = LobbyCmd.Right; return true;
+                }
+                return false;
+        }
+        return false;
+    }
+
+    void Join(int dev)
+    {
+        if (_team.Count >= 4) { LobbyMessage("THE TEAM IS FULL"); return; }
+        // default to the first survivor nobody has picked yet
+        int pick = 0;
+        for (int c = 0; c < GameData.Characters.Length; c++)
+            if (!_team.Exists(t => t.Character == c)) { pick = c; break; }
+        _team.Add(new Joined { Device = dev, Character = pick });
+        Sfx.Play("ui_select");
+        RefreshLobby();
+        Pop(_cardPanel[_team.Count - 1]);
+    }
+
+    void TryStart()
+    {
+        if (_team.Count < 2) { Sfx.Play("empty"); LobbyMessage("CO-OP NEEDS AT LEAST 2 PLAYERS"); return; }
+        GameData.Slots.Clear();
+        foreach (var t in _team)
+        {
+            bool kb = t.Device == KeyboardDevice;
+            GameData.Slots.Add(new PlayerSlot(kb ? InputSetup.NoPad : t.Device, kb, t.Character));
+        }
+        Sfx.Play("ui_select");
+        Go(Screen.Stage);
+    }
+
+    static void Pop(Control c)
+    {
+        c.PivotOffset = c.Size / 2f;
+        c.Scale = Vector2.One * 1.08f;
+        c.CreateTween().TweenProperty(c, "scale", Vector2.One, 0.15f);
     }
 
     // ------------------------------------------------------------------ survivor / stage
@@ -534,7 +735,7 @@ public partial class MainMenu : CanvasLayer
             _sIndex.Text = $"STAGE  {i + 1} / {_maps.Count}";
             _sName.Text = m.Title;
             _sSub.Text = m.Subtitle;
-            int best = GameData.LoadBest(i);
+            int best = GameData.LoadBest(i, _coop);
             _sBest.Text = best > 0 ? best.ToString("N0") : "—";
             _sBest.LabelSettings.FontColor = Gold;
             _sGates.Text = m.GateSpawns.Count.ToString();
@@ -558,20 +759,27 @@ public partial class MainMenu : CanvasLayer
     {
         _screen = s;
         _cool = 0.2f;
-        bool title = s == Screen.Title;
+        bool title = s == Screen.Title, lobby = s == Screen.Lobby;
         Fade(_titleUi, title, instant);
-        Fade(_shadeTitle, title, instant);
+        Fade(_shadeTitle, title || lobby, instant);
         Fade(_pickUi, !title, instant);
-        Fade(_shadePick, !title, instant);
-        Fade(_showcase, !title, instant);
+        Fade(_shadePick, !title && !lobby, instant);
+        Fade(_showcase, !title && !lobby, instant);
         _charSet.Visible = s == Screen.Survivor;
         _mapSet.Visible = s == Screen.Stage;
         _survInfo.Visible = s == Screen.Survivor;
         _stageInfo.Visible = s == Screen.Stage;
-        for (int i = 0; i < 3; i++) _crumbs[i].LabelSettings.FontColor = i == (int)s ? Gold : i < (int)s ? Soft : Dim;
+        _lobbyUi.Visible = lobby;
+        _arrowL.Visible = _arrowR.Visible = !lobby;
+        _crumbs[0].Text = _coop ? "LOCAL CO-OP" : "SINGLE PLAYER";
+        _crumbs[1].Text = _coop ? "TEAM" : "SURVIVOR";
+        int step = lobby ? 1 : (int)s;
+        for (int i = 0; i < 3; i++) _crumbs[i].LabelSettings.FontColor = i == step ? Gold : i < step ? Soft : Dim;
         _footer.Text = s == Screen.Stage ? "◀ ▶  CHOOSE STAGE        (A)  FIGHT!        (B)  BACK"
-                                         : "◀ ▶  CHOOSE SURVIVOR        (A)  SELECT        (B)  BACK";
+                     : lobby ? "(A) / ENTER  JOIN        ◀ ▶  SURVIVOR        (B) / ESC  LEAVE        START  READY"
+                     : "◀ ▶  CHOOSE SURVIVOR        (A)  SELECT        (B)  BACK";
         if (title) _single.CallDeferred(Control.MethodName.GrabFocus);
+        else if (lobby) { GetViewport().GuiReleaseFocus(); RefreshLobby(); }
         else { GetViewport().GuiReleaseFocus(); FrameCamera(s, instant); Refresh(0); }
     }
 
@@ -602,7 +810,7 @@ public partial class MainMenu : CanvasLayer
             _backdrop = _maps.Index;
             BackdropChanged?.Invoke(_backdrop);
         }
-        if (_done || _cool > 0 || _screen == Screen.Title) return;
+        if (_done || _cool > 0 || _screen == Screen.Title || _screen == Screen.Lobby) return;
 
         var car = _screen == Screen.Survivor ? _chars : _maps;
         int d = Input.IsActionJustPressed("menu_left") ? -1 : Input.IsActionJustPressed("menu_right") ? 1 : 0;
@@ -618,12 +826,12 @@ public partial class MainMenu : CanvasLayer
         {
             Sfx.Play("ui_select");
             if (_screen == Screen.Survivor) Go(Screen.Stage);
-            else { _done = true; Finished?.Invoke(_chars.Index, _maps.Index); }
+            else { _done = true; Finished?.Invoke(_coop && _team.Count > 0 ? _team[0].Character : _chars.Index, _maps.Index); }
         }
         else if (Input.IsActionJustPressed("menu_back"))
         {
             Sfx.Play("ui_move");
-            Go(_screen == Screen.Stage ? Screen.Survivor : Screen.Title);
+            Go(_screen == Screen.Stage ? (_coop ? Screen.Lobby : Screen.Survivor) : Screen.Title);
         }
     }
 }

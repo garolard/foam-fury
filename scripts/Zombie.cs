@@ -20,10 +20,16 @@ public partial class Zombie : CharacterBody3D
     // status effects: mud slows, fire burns over time
     float _slowT, _slowMul = 1f, _burnT, _burnDps, _burnTick;
     CpuParticles3D _burnFx;
+    Player _burnSource, _lastSource;
+    // co-op: the player this zombie is chasing (nearest one on their feet, re-picked periodically)
+    Player _target;
+    float _retarget;
     OmniLight3D _burnLight;
 
     public bool Burning => _burnT > 0;
     public bool Slowed => _slowT > 0;
+    /// Player who set this zombie on fire (credit for burn kills / mud it lights).
+    public Player BurnSource => _burnSource;
 
     public void Setup(ZombieType type, int wave, bool rise)
     {
@@ -101,7 +107,6 @@ public partial class Zombie : CharacterBody3D
         if (Dead) return;
         float dt = (float)delta;
         var main = Main.Instance;
-        var player = main.Player;
 
         if (_rise > 0)
         {
@@ -122,8 +127,19 @@ public partial class Zombie : CharacterBody3D
             Sfx.Play3D("groan" + GD.RandRange(0, 3), GlobalPosition, -4f, 0.1f, Type == ZombieType.Runner ? 1.4f : Type == ZombieType.Brute ? 0.7f : 1f);
         }
 
+        // keep the current victim through a wind-up; otherwise re-pick the nearest standing player now and then
+        _retarget -= dt;
+        bool targetLost = _target == null || !_target.Targetable;
+        if (targetLost || (_retarget <= 0 && _windup < 0))
+        {
+            _retarget = 0.5f;
+            var t = main.ClosestTarget(GlobalPosition);
+            if (t != _target) { _target = t; _repath = 0; }
+        }
+        var player = _target;
+
         Vector3 desired = Vector3.Zero;
-        bool playerAlive = player != null && !player.Dead;
+        bool playerAlive = player != null && player.Targetable;
         var flatToPlayer = Vector3.Zero;
         float distToPlayer = 999f;
         if (playerAlive)
@@ -242,9 +258,10 @@ public partial class Zombie : CharacterBody3D
     }
 
     /// Set on fire: `dps` damage per second for `time` seconds (refreshes, keeps the hotter flame).
-    public void Ignite(float dps, float time)
+    public void Ignite(float dps, float time, Player source = null)
     {
         if (Dead || _rise > 0) return;
+        if (source != null) _burnSource = source;
         if (_burnT <= 0) _burnTick = 0.1f;
         _burnDps = _burnT > 0 ? Mathf.Max(_burnDps, dps) : dps;
         _burnT = Mathf.Max(_burnT, time);
@@ -264,7 +281,7 @@ public partial class Zombie : CharacterBody3D
                 _burnTick += tick;
                 // fall away from where we're facing if the fire finishes us off
                 var back = -new Vector3(Mathf.Sin(_yaw), 0, Mathf.Cos(_yaw));
-                TakeDamage(_burnDps * tick, GlobalPosition + Vector3.Up * Height * 0.6f, back, false, 0f, false, true);
+                TakeDamage(_burnDps * tick, GlobalPosition + Vector3.Up * Height * 0.6f, back, false, 0f, false, true, _burnSource);
             }
         }
         if (burning && _burnFx == null)
@@ -291,10 +308,11 @@ public partial class Zombie : CharacterBody3D
         }
     }
 
-    public void TakeDamage(float dmg, Vector3 pos, Vector3 dir, bool headshot, float knock = 2.5f, bool explosive = false, bool minor = false)
+    public void TakeDamage(float dmg, Vector3 pos, Vector3 dir, bool headshot, float knock = 2.5f, bool explosive = false, bool minor = false, Player source = null)
     {
         if (Dead || _rise > 0) return;
         var main = Main.Instance;
+        if (source != null) _lastSource = source;
         if (!minor) Hits++;
         if (headshot) { dmg *= 2f; Headshots++; if (Type == ZombieType.Brute) BruteHeadshots++; }
         _hp -= dmg;
@@ -312,7 +330,8 @@ public partial class Zombie : CharacterBody3D
         Fx.Number(pos + Vector3.Up * 0.3f, Mathf.Max(1, Mathf.RoundToInt(dmg)).ToString(),
             headshot ? new Color(1f, 0.85f, 0.2f) : minor ? new Color(1f, 0.6f, 0.25f) : Colors.White, headshot ? 1.4f : minor ? 0.7f : 1f);
         if (!minor || GD.Randf() < 0.2f) Sfx.Play3D(headshot ? "headshot" : "hit", pos, headshot ? 0f : minor ? -9f : -3f, 0.15f);
-        if (!minor || _hp <= 0) main.Hud?.HitMarker(headshot, _hp <= 0);
+        // hit markers go to whoever fired (solo: the only player, even for sourceless burn ticks)
+        if (!minor || _hp <= 0) (source ?? main.SoloPlayer)?.Hud?.HitMarker(headshot, _hp <= 0);
         if (_hp <= 0) Die(dir, headshot);
     }
 
@@ -324,7 +343,7 @@ public partial class Zombie : CharacterBody3D
         CollisionMask = 0;
         Sfx.Play3D("zombie_die", GlobalPosition, -1f, 0.15f, Type == ZombieType.Brute ? 0.6f : Type == ZombieType.Runner ? 1.4f : 1f);
         Fx.Burst(GlobalPosition + Vector3.Up * Height * 0.5f, new Color(0.4f, 0.07f, 0.05f), 18, 7f, 0.14f, 0.8f);
-        Main.Instance.OnZombieKilled(this, headshot);
+        Main.Instance.OnZombieKilled(this, headshot, _lastSource);
 
         // procedural death: explosions launch, headshots crumple, everything else gets knocked flat
         var kind = _lastExplosive ? DeathKind.Launch : headshot ? DeathKind.Crumple : GD.Randf() < 0.25f ? DeathKind.Crumple : DeathKind.FallBack;
@@ -332,7 +351,7 @@ public partial class Zombie : CharacterBody3D
         float settle = _model.PlayDeath(kind, dir, power);
         var tw = CreateTween();
         tw.TweenInterval(settle);
-        tw.TweenCallback(Callable.From(() => { if (Type == ZombieType.Brute) Main.Instance.Rig?.AddTrauma(0.35f); }));
+        tw.TweenCallback(Callable.From(() => { if (Type == ZombieType.Brute) Main.Instance.Shake(GlobalPosition, 0.35f); }));
         tw.TweenInterval(2.4f);
         tw.TweenProperty(_model, "position:y", -1.5f, 1.4f).AsRelative();
         tw.TweenCallback(Callable.From(QueueFree));

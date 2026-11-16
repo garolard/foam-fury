@@ -89,6 +89,51 @@ public partial class CharacterModel : Node3D
 
     /// Procedural death animation. `dir` is the world direction of the killing blow (body falls along it).
     /// Returns the duration until the body is at rest.
+    Tween _poseTween;
+
+    /// Co-op "downed": knees buckle and the body slumps, but stays upright enough to be revived.
+    public void PlayDowned()
+    {
+        Dying = true;
+        Play("idle", 0.15f, 0.15f);
+        float s = Scale.X;
+        var p0 = Position;
+        float side = GD.Randf() < 0.5f ? -1f : 1f;
+        var pose = Pose;
+        _poseTween?.Kill();
+        _poseTween = CreateTween();
+        _poseTween.TweenMethod(Callable.From<float>(t =>
+        {
+            float k = Mathf.SmoothStep(0, 1, t);
+            pose.LegsWeight = k;
+            pose.RightUpLeg = pose.LeftUpLeg = new Vector3(0, -0.55f, 0.85f).Normalized();
+            pose.RightLeg = pose.LeftLeg = new Vector3(0, -0.8f, -0.6f).Normalized();
+            pose.ArmsWeight = k * 0.8f;
+            pose.RightArm = new Vector3(-0.25f, -1f, 0.3f).Normalized();
+            pose.LeftArm = new Vector3(0.25f, -1f, 0.3f).Normalized();
+            pose.RightFore = pose.LeftFore = null;
+            pose.SpinePitch = 0.6f * k; pose.SpineYaw = 0; pose.SpineRoll = 0;
+            pose.HeadPitch = 0.5f * k; pose.HeadYaw = 0; pose.HeadRoll = 0.3f * side * k;
+            Position = p0 + Vector3.Down * 0.42f * s * k;
+        }), 0f, 1f, 0.32f).SetEase(Tween.EaseType.Out);
+    }
+
+    /// Undo a downed/death pose (revive): back on the feet, procedural layer cleared.
+    public void Recover()
+    {
+        _poseTween?.Kill();
+        _poseTween = null;
+        Dying = false;
+        Position = Vector3.Zero;
+        Quaternion = new Quaternion(Vector3.Up, Rotation.Y);
+        Pose.LegsWeight = 0;
+        Pose.ArmsWeight = 0;
+        Pose.SpinePitch = Pose.SpineYaw = Pose.SpineRoll = 0;
+        Pose.HeadPitch = Pose.HeadYaw = Pose.HeadRoll = 0;
+        _current = "";
+        Play("idle", 1f, 0.2f);
+    }
+
     public float PlayDeath(DeathKind kind, Vector3 dir, float power = 1f)
     {
         Dying = true;
@@ -102,7 +147,8 @@ public partial class CharacterModel : Node3D
         var fwdWorld = new Vector3(GlobalBasis.Z.X, 0, GlobalBasis.Z.Z).Normalized();
         float side = GD.Randf() < 0.5f ? -1f : 1f;
         var pose = Pose;
-        var tw = CreateTween();
+        _poseTween?.Kill();
+        var tw = _poseTween = CreateTween();
 
         switch (kind)
         {
