@@ -57,6 +57,7 @@ public static class Fx
 
     public static void Burst(Vector3 pos, Color color, int count = 12, float speed = 5f, float size = 0.12f, float life = 0.6f, Vector3? dir = null, float spread = 60f, float gravity = 14f)
     {
+        if (Net.IsServer) return; // headless server: effects are drawn by the clients
         var p = new CpuParticles3D
         {
             Emitting = false, OneShot = true, Explosiveness = 1f, Amount = count, Lifetime = life,
@@ -76,6 +77,7 @@ public static class Fx
 
     public static void Flash(Vector3 pos, Color color, float energy = 3f, float range = 5f, float time = 0.06f)
     {
+        if (Net.IsServer) return; // headless server: effects are drawn by the clients
         var l = new OmniLight3D { LightColor = color, LightEnergy = energy, OmniRange = range, ShadowEnabled = false, LightVolumetricFogEnergy = 2.5f };
         World.AddChild(l);
         l.GlobalPosition = pos;
@@ -86,6 +88,7 @@ public static class Fx
 
     public static void MuzzleFlash(Vector3 pos, Vector3 dir, Color color)
     {
+        if (Net.IsServer) return; // headless server: effects are drawn by the clients
         Flash(pos, color, 4f, 6f, 0.07f);
         var m = new MeshInstance3D { Mesh = new SphereMesh { Radius = 0.12f, Height = 0.24f, RadialSegments = 8, Rings = 4 }, MaterialOverride = Glow(color),
             CastShadow = GeometryInstance3D.ShadowCastingSetting.Off };
@@ -99,6 +102,7 @@ public static class Fx
 
     public static void Number(Vector3 pos, string text, Color color, float size = 1f)
     {
+        if (Net.IsServer) return; // headless server: effects are drawn by the clients
         var l = new Label3D
         {
             Text = text, Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true, FontSize = 72, PixelSize = 0.004f * size,
@@ -116,6 +120,7 @@ public static class Fx
 
     public static void StuckDart(Vector3 pos, Vector3 dir, Color color)
     {
+        if (Net.IsServer) return; // headless server: effects are drawn by the clients
         var d = Assets.Model("kit", "bullet-foam-tip");
         World.AddChild(d);
         d.GlobalPosition = pos - dir * 0.12f;
@@ -132,6 +137,7 @@ public static class Fx
 
     public static void Explosion(Vector3 pos, float radius)
     {
+        if (Net.IsServer) return; // headless server: effects are drawn by the clients
         Flash(pos + Vector3.Up, new Color(1f, 0.6f, 0.2f), 12f, radius * 3f, 0.4f);
         Burst(pos + Vector3.Up * 0.3f, new Color(1f, 0.55f, 0.1f), 30, 14f, 0.3f, 0.7f, Vector3.Up, 80f, 8f);
         Burst(pos + Vector3.Up * 0.3f, new Color(0.25f, 0.22f, 0.2f), 20, 9f, 0.35f, 1.2f, Vector3.Up, 70f, 4f);
