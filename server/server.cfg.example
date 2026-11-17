@@ -1,0 +1,15 @@
+; Foam Fury dedicated server — copy to server.cfg next to the server binary (or pass --config=path)
+[server]
+; shown in the server list
+name="Foam Fury Server"
+motd="Hold the arena!"
+; UDP port (open it on your router / firewall)
+port=7777
+; 1-4
+max_players=4
+; empty = no password
+password=""
+; 0 Dusk Coliseum, 1 Neon Arcade, 2 Night Crypt, 3 Pine Camp
+map=0
+; seconds between game over and the next run (or sooner once everyone presses READY)
+restart_delay=10
