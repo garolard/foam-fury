@@ -11,13 +11,14 @@ public partial class MudGlob : Node3D
     float _damage, _life = 3f, _drip;
     readonly Godot.Collections.Array<Rid> _exclude = new();
     Player _source;
+    bool _visual;
 
     static SphereMesh _mesh;
     static StandardMaterial3D _mat;
 
     public static StandardMaterial3D WetMud => _mat ??= new StandardMaterial3D { AlbedoColor = MudColor, Roughness = 0.08f, Metallic = 0.25f };
 
-    public static void Fire(Vector3 pos, Vector3 dir, WeaponDef w, float damageMult, Rid ownerRid, Player source = null)
+    public static void Fire(Vector3 pos, Vector3 dir, WeaponDef w, float damageMult, Rid ownerRid, Player source = null, bool visual = false)
     {
         var g = new MudGlob
         {
@@ -25,6 +26,7 @@ public partial class MudGlob : Node3D
             _vel = dir.Normalized() * w.ProjectileSpeed + Vector3.Up * 2.5f,
             _damage = w.Damage * damageMult,
             _source = source,
+            _visual = visual,
         };
         g._exclude.Add(ownerRid);
         Main.Instance.World.AddChild(g);
@@ -61,8 +63,8 @@ public partial class MudGlob : Node3D
         Vector3? floor;
         if (hit["collider"].AsGodotObject() is Zombie z)
         {
-            z.TakeDamage(_damage, pos, dir, z.IsHeadshot(hit["shape"].AsInt32()), 1.5f, source: _source);
-            z.Slow(HitSlow, HitSlowTime);
+            if (!_visual) z.TakeDamage(_damage, pos, dir, z.IsHeadshot(hit["shape"].AsInt32()), 1.5f, source: _source);
+            if (!_visual) z.Slow(HitSlow, HitSlowTime);
             floor = MudPuddle.FindFloor(space, new Vector3(z.GlobalPosition.X, pos.Y, z.GlobalPosition.Z) + Vector3.Up * 0.5f);
         }
         else
@@ -72,7 +74,12 @@ public partial class MudGlob : Node3D
         }
         Fx.Burst(pos + n * 0.05f, MudColor, 12, 4f, 0.12f, 0.55f, n + Vector3.Up * 0.5f, 70f);
         Sfx.Play3D("splat", pos, -2f, 0.15f);
-        if (floor.HasValue) MudPuddle.Spawn(floor.Value);
+        // online the shooter reports where it landed and the server makes the puddle
+        if (floor.HasValue && !_visual)
+        {
+            if (Net.IsClient) Net.Game?.SendMudLanded(floor.Value);
+            else MudPuddle.Spawn(floor.Value);
+        }
         QueueFree();
     }
 }

@@ -9,14 +9,33 @@ public partial class Pickup : Node3D
     float _t, _life = 22f;
     Vector3 _vel;
     bool _grounded;
+    /// Online: server id. Taken: already claimed (server) / asked for (client).
+    public int NetId;
+    public bool Taken;
+    bool _replica;
+    float _claimT;
 
     public static void Spawn(PickupKind kind, Vector3 pos)
     {
         var p = new Pickup { Kind = kind };
+        if (Net.IsServer) p.NetId = NetIds.Next();
         Main.Instance.World.AddChild(p);
         p.GlobalPosition = pos + Vector3.Up * 0.8f;
         p._vel = new Vector3((float)GD.RandRange(-2, 2), 5f, (float)GD.RandRange(-2, 2));
+        if (Net.IsServer) Net.Game?.SendPickupSpawned(p, p._vel);
     }
+
+    public static void SpawnReplica(int id, PickupKind kind, Vector3 pos, Vector3 vel)
+    {
+        if (NetIds.Get<Pickup>(id) != null) return;
+        var p = new Pickup { Kind = kind, NetId = id, _replica = true, _vel = vel };
+        Main.Instance.World.AddChild(p);
+        p.GlobalPosition = pos;
+        if (vel == Vector3.Zero) p._grounded = true; // already lying there (joined mid-run)
+    }
+
+    public override void _EnterTree() => NetIds.Add(NetId, this);
+    public override void _ExitTree() => NetIds.Remove(NetId, this);
 
     public override void _Ready()
     {
@@ -57,7 +76,13 @@ public partial class Pickup : Node3D
         _model.Position = new Vector3(0, 0.35f + Mathf.Sin(_t * 3f) * 0.12f, 0);
         _model.RotateY(dt * 2.5f);
         if (_life < 4f) Visible = Mathf.PosMod(_life, 0.25f) > 0.1f;
-        if (_life <= 0) { QueueFree(); return; }
+        if (_life <= 0)
+        {
+            if (Net.IsServer) Net.Game?.SendPickupGone(this);
+            QueueFree();
+            return;
+        }
+        if (Net.IsServer) return; // clients claim pickups; the server just referees
 
         // nearest player on their feet gets the magnet (and the loot)
         Player pl = null;
@@ -75,6 +100,19 @@ public partial class Pickup : Node3D
         {
             GlobalPosition += to.Normalized() * Mathf.Min(d, (14f - d * 2f) * dt);
         }
-        if (d < 1.0f && pl.TryCollect(Kind)) QueueFree();
+        if (d >= 1.0f) return;
+        if (_replica)
+        {
+            // ask once; the server answers with PickupTaken (first come, first served)
+            // (re-ask after a moment if the server didn't hand it over, e.g. we were a step too far)
+            _claimT -= dt;
+            if ((!Taken || _claimT <= 0) && pl.NetRole == Player.Role.Local && pl.CanCollect(Kind))
+            {
+                Taken = true;
+                _claimT = 1f;
+                Net.Game?.SendTakePickup(this);
+            }
+        }
+        else if (pl.TryCollect(Kind)) QueueFree();
     }
 }
