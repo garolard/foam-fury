@@ -73,11 +73,15 @@ jobs:
         run: |
           set -eu
           godot=~/tools/godot/godot
+          # NuGet.config has a macOS-only local Godot source; the SDK packages also come from nuget.org
+          sed -i '/GodotLocal/d' NuGet.config
           $godot --headless --path . --import
           mkdir -p binaries/server
           $godot --headless --path . --export-release "Linux Server" binaries/server/foam-fury-server.x86_64
           ls -la binaries/server
           test -f binaries/server/foam-fury-server.pck
+          # Godot still writes the .pck when the C# build fails; without this folder the server cannot start
+          test -f binaries/server/data_Prototype_linuxbsd_x86_64/Prototype.dll
 
       - name: Image tags
         id: meta
