@@ -20,7 +20,19 @@ normal game (**ONLINE → pick survivor → add your server's address**). One se
    ```
    The .NET runtime needs ICU: `apt install libicu72` (Debian 12) / `libicu-dev` / `icu-libs` (Alpine).
 
-### Docker
+### Docker Compose
+
+From the project root, after exporting:
+```sh
+docker compose up -d --build      # build the image and start the server
+docker compose logs -f            # follow the server log
+docker compose restart            # after editing server/config/server.cfg
+docker compose down               # stop it
+```
+The config is `server/config/server.cfg` (created with defaults on first start, git-ignored).
+`SERVER_PORT=7790 docker compose up -d` changes the port (it overrides `port` in the config).
+
+### Docker (plain)
 
 ```sh
 docker build -f server/Dockerfile -t foam-fury-server .
