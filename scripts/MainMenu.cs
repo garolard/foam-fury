@@ -98,7 +98,7 @@ public partial class StatBar : Control
 /// Front end: title -> survivor select (or co-op lobby) -> stage select.
 public partial class MainMenu : CanvasLayer
 {
-    public enum Screen { Title, Survivor, Stage, Lobby }
+    public enum Screen { Title, Survivor, Stage, Lobby, Servers }
 
     /// (character, map) when the player starts a run. Co-op runs also fill GameData.Slots.
     public event Action<int, int> Finished;
@@ -117,7 +117,7 @@ public partial class MainMenu : CanvasLayer
     Carousel _chars, _maps;
     readonly List<CharacterModel> _models = new();
     readonly List<MapBase> _minis = new();
-    Button _single, _multi;
+    Button _single, _multi, _onlineBtn;
     Label _footer, _arrowL, _arrowR;
     readonly Label[] _crumbs = new Label[3];
     float _cool, _settle;
@@ -177,6 +177,8 @@ public partial class MainMenu : CanvasLayer
         BuildTitle();
         BuildPicker();
         BuildLobby();
+        BuildServers();
+        if (start == Screen.Servers) _online = true;
         if (start == Screen.Lobby || (start != Screen.Title && GameData.Coop))
         {
             _coop = true;
@@ -352,11 +354,12 @@ public partial class MainMenu : CanvasLayer
         _titleUi.AddChild(col);
         _single = Hud.MakeButton("SINGLE PLAYER", 36, new Vector2(480, 80));
         _multi = Hud.MakeButton("LOCAL CO-OP", 36, new Vector2(480, 80));
+        _onlineBtn = Hud.MakeButton("ONLINE", 36, new Vector2(480, 80));
         var tag = Hud.MakeLabel("2-4", 18, Gold, 5);
         tag.SetAnchorsPreset(Control.LayoutPreset.CenterRight);
         tag.OffsetLeft = -64; tag.OffsetTop = -14; tag.Rotation = Mathf.DegToRad(-8);
         _multi.AddChild(tag);
-        foreach (var b in new[] { _single, _multi })
+        foreach (var b in new[] { _single, _multi, _onlineBtn })
         {
             b.FocusEntered += () => { if (_screen == Screen.Title) Sfx.Play("ui_move", -6f); };
             b.MouseEntered += b.GrabFocus;
@@ -368,6 +371,16 @@ public partial class MainMenu : CanvasLayer
             if (_cool > 0) return;
             Sfx.Play("ui_select");
             _coop = false;
+            _online = false;
+            GameData.Slots.Clear();
+            Go(Screen.Survivor);
+        };
+        _onlineBtn.Pressed += () =>
+        {
+            if (_cool > 0) return;
+            Sfx.Play("ui_select");
+            _coop = false;
+            _online = true;
             GameData.Slots.Clear();
             Go(Screen.Survivor);
         };
@@ -376,6 +389,7 @@ public partial class MainMenu : CanvasLayer
             if (_cool > 0) return;
             Sfx.Play("ui_select");
             _coop = true;
+            _online = false;
             Go(Screen.Lobby);
         };
 
@@ -759,27 +773,32 @@ public partial class MainMenu : CanvasLayer
     {
         _screen = s;
         _cool = 0.2f;
-        bool title = s == Screen.Title, lobby = s == Screen.Lobby;
+        bool title = s == Screen.Title, lobby = s == Screen.Lobby, servers = s == Screen.Servers;
+        bool flat = lobby || servers; // full-screen panels, no 3D showcase
         Fade(_titleUi, title, instant);
-        Fade(_shadeTitle, title || lobby, instant);
+        Fade(_shadeTitle, title || flat, instant);
         Fade(_pickUi, !title, instant);
-        Fade(_shadePick, !title && !lobby, instant);
-        Fade(_showcase, !title && !lobby, instant);
+        Fade(_shadePick, !title && !flat, instant);
+        Fade(_showcase, !title && !flat, instant);
+        _serversUi.Visible = servers;
         _charSet.Visible = s == Screen.Survivor;
         _mapSet.Visible = s == Screen.Stage;
         _survInfo.Visible = s == Screen.Survivor;
         _stageInfo.Visible = s == Screen.Stage;
         _lobbyUi.Visible = lobby;
-        _arrowL.Visible = _arrowR.Visible = !lobby;
-        _crumbs[0].Text = _coop ? "LOCAL CO-OP" : "SINGLE PLAYER";
+        _arrowL.Visible = _arrowR.Visible = !flat;
+        _crumbs[0].Text = _coop ? "LOCAL CO-OP" : _online ? "ONLINE" : "SINGLE PLAYER";
         _crumbs[1].Text = _coop ? "TEAM" : "SURVIVOR";
-        int step = lobby ? 1 : (int)s;
+        _crumbs[2].Text = _online ? "SERVER" : "STAGE";
+        int step = lobby ? 1 : servers ? 2 : (int)s;
         for (int i = 0; i < 3; i++) _crumbs[i].LabelSettings.FontColor = i == step ? Gold : i < step ? Soft : Dim;
         _footer.Text = s == Screen.Stage ? "◀ ▶  CHOOSE STAGE        (A)  FIGHT!        (B)  BACK"
                      : lobby ? "(A) / ENTER  JOIN        ◀ ▶  SURVIVOR        (B) / ESC  LEAVE        START  READY"
+                     : servers ? "PICK A SERVER TO JOIN        (B) / ESC  BACK"
                      : "◀ ▶  CHOOSE SURVIVOR        (A)  SELECT        (B)  BACK";
         if (title) _single.CallDeferred(Control.MethodName.GrabFocus);
         else if (lobby) { GetViewport().GuiReleaseFocus(); RefreshLobby(); }
+        else if (servers) OpenServers();
         else { GetViewport().GuiReleaseFocus(); FrameCamera(s, instant); Refresh(0); }
     }
 
@@ -810,7 +829,8 @@ public partial class MainMenu : CanvasLayer
             _backdrop = _maps.Index;
             BackdropChanged?.Invoke(_backdrop);
         }
-        if (_done || _cool > 0 || _screen == Screen.Title || _screen == Screen.Lobby) return;
+        if (_screen == Screen.Servers && !_done && _cool <= 0 && Input.IsActionJustPressed("menu_back")) { ServersBack(); return; }
+        if (_done || _cool > 0 || _screen == Screen.Title || _screen == Screen.Lobby || _screen == Screen.Servers) return;
 
         var car = _screen == Screen.Survivor ? _chars : _maps;
         int d = Input.IsActionJustPressed("menu_left") ? -1 : Input.IsActionJustPressed("menu_right") ? 1 : 0;
@@ -825,7 +845,7 @@ public partial class MainMenu : CanvasLayer
         else if (Input.IsActionJustPressed("menu_accept") || Input.IsActionJustPressed("fire"))
         {
             Sfx.Play("ui_select");
-            if (_screen == Screen.Survivor) Go(Screen.Stage);
+            if (_screen == Screen.Survivor) Go(_online ? Screen.Servers : Screen.Stage);
             else { _done = true; Finished?.Invoke(_coop && _team.Count > 0 ? _team[0].Character : _chars.Index, _maps.Index); }
         }
         else if (Input.IsActionJustPressed("menu_back"))
