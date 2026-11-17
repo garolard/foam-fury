@@ -350,7 +350,7 @@ void fragment() {
             _downTitle.Text = "YOU'RE DOWN!";
             _downTitle.LabelSettings.FontColor = new Color(1f, 0.35f, 0.3f);
             var helper = m.Reviver(_player);
-            _downSub.Text = helper != null ? $"{helper.Def.Name} IS REVIVING YOU…" : $"BLEEDING OUT  {Mathf.CeilToInt(_player.BleedOut)}s   ·   CRAWL TO A TEAMMATE";
+            _downSub.Text = helper != null ? $"{helper.DisplayName} IS REVIVING YOU…" : $"BLEEDING OUT  {Mathf.CeilToInt(_player.BleedOut)}s   ·   CRAWL TO A TEAMMATE";
             _reviveBar.Visible = _player.ReviveProgress > 0;
             _reviveBar.Value = _player.ReviveProgress;
             _hint.Text = "";
@@ -368,7 +368,7 @@ void fragment() {
         {
             _downBox.Visible = true;
             bool reviving = m.Reviver(mate) == _player;
-            _downTitle.Text = reviving ? $"REVIVING {mate.Def.Name}" : $"HOLD ({key})  REVIVE {mate.Def.Name}";
+            _downTitle.Text = reviving ? $"REVIVING {mate.DisplayName}" : $"HOLD ({key})  REVIVE {mate.DisplayName}";
             _downTitle.LabelSettings.FontColor = new Color(0.5f, 1f, 0.5f);
             _downSub.Text = $"{Mathf.CeilToInt(mate.BleedOut)}s LEFT";
             _reviveBar.Visible = true;
