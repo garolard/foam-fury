@@ -20,7 +20,16 @@ normal game (**ONLINE → pick survivor → add your server's address**). One se
    ```
    The .NET runtime needs ICU: `apt install libicu72` (Debian 12) / `libicu-dev` / `icu-libs` (Alpine).
 
-### Docker Compose
+### Prebuilt (easiest)
+
+Download `foam-fury-server-<version>-docker.zip` from the GitHub release, unzip it on the Linux box, edit
+`config/server.cfg`, then `docker compose up -d`. The image comes from `ghcr.io/garolard/foam-fury-server`.
+The release also has `foam-fury-server-<version>-linux-x86_64.zip` with the plain binaries.
+
+Releases are built by `.github/workflows/server.yml`: push a tag (`git tag v0.1.0 && git push origin v0.1.0`) and
+it exports the server, pushes the image (`:0.1.0` and `:latest`) and attaches both zips to the release.
+
+### Docker Compose (build from source)
 
 From the project root, after exporting:
 ```sh
