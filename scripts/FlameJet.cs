@@ -11,6 +11,8 @@ public partial class FlameJet : Node3D
     float _life, _damage;
     readonly HashSet<Zombie> _hit = new();
     Player _source;
+    /// Online client: just the look (the server's copy does the burning).
+    bool _visual;
     MeshInstance3D _ball;
     StandardMaterial3D _mat;
 
@@ -31,13 +33,14 @@ public partial class FlameJet : Node3D
         Transparency = BaseMaterial3D.TransparencyEnum.Alpha, CullMode = BaseMaterial3D.CullModeEnum.Disabled,
     };
 
-    public static void Fire(Vector3 pos, Vector3 dir, Vector3 inheritVel, WeaponDef w, float damageMult, Player source = null)
+    public static void Fire(Vector3 pos, Vector3 dir, Vector3 inheritVel, WeaponDef w, float damageMult, Player source = null, bool visual = false)
     {
         var j = new FlameJet
         {
             _vel = dir.Normalized() * w.ProjectileSpeed * (float)GD.RandRange(0.85, 1.1) + inheritVel * 0.5f,
             _damage = w.Damage * damageMult,
             _source = source,
+            _visual = visual,
         };
         Main.Instance.World.AddChild(j);
         j.GlobalPosition = pos;
@@ -73,7 +76,7 @@ public partial class FlameJet : Node3D
             var n = hit["normal"].AsVector3();
             to = hit["position"].AsVector3() + n * 0.15f;
             _vel = (_vel - n * _vel.Dot(n)) * 0.4f;
-            MudPuddle.IgniteAt(to, radius, _source); // flame splashing on the floor lights any mud there
+            if (!_visual) MudPuddle.IgniteAt(to, radius, _source); // flame splashing on the floor lights any mud there
         }
         GlobalPosition = to;
         _vel *= Mathf.Exp(-2.2f * dt);
@@ -83,6 +86,7 @@ public partial class FlameJet : Node3D
         _ball.RotateY(dt * 9f); // tumbling spikes read as licking flame
         _mat.AlbedoColor = FireRamp.Sample(t);
 
+        if (_visual) return;
         var pos = GlobalPosition;
         foreach (var z in Main.Instance.Zombies.ToArray())
         {

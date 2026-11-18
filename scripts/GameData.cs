@@ -98,6 +98,47 @@ public static class GameData
     public static readonly List<PlayerSlot> Slots = new();
     public static bool Coop => Slots.Count > 1;
 
+    /// Why we're back at the server list (lost connection...), shown once.
+    public static string NetMessage;
+
+    const string ServersPath = "user://servers.cfg";
+
+    /// Servers saved in the online browser.
+    public static List<SavedServer> LoadServers()
+    {
+        var list = new List<SavedServer>();
+        var cfg = new ConfigFile();
+        if (cfg.Load(ServersPath) != Error.Ok) return list;
+        foreach (var sec in cfg.GetSections())
+            list.Add(new SavedServer((string)cfg.GetValue(sec, "name", ""), (string)cfg.GetValue(sec, "address", "")));
+        return list;
+    }
+
+    public static void SaveServers(List<SavedServer> list)
+    {
+        var cfg = new ConfigFile();
+        for (int i = 0; i < list.Count; i++)
+        {
+            cfg.SetValue($"server{i}", "name", list[i].Name);
+            cfg.SetValue($"server{i}", "address", list[i].Address);
+        }
+        cfg.Save(ServersPath);
+    }
+
+    public static string LoadPlayerName()
+    {
+        var cfg = new ConfigFile();
+        return cfg.Load("user://save.cfg") == Error.Ok ? (string)cfg.GetValue("profile", "name", "") : "";
+    }
+
+    public static void SavePlayerName(string name)
+    {
+        var cfg = new ConfigFile();
+        cfg.Load("user://save.cfg");
+        cfg.SetValue("profile", "name", name);
+        cfg.Save("user://save.cfg");
+    }
+
     static string BestKey(int map, bool coop) => coop ? $"coop_best_{map}" : $"best_{map}";
 
     public static int LoadBest(int map, bool coop = false)
@@ -117,3 +158,6 @@ public static class GameData
 
 /// One local player: which pad drives them (-1 = any pad), whether they use keyboard+mouse, and their survivor.
 public record PlayerSlot(int Pad, bool Kbm, int Character);
+
+/// A server in the online browser: display name and "host[:port]".
+public record SavedServer(string Name, string Address);

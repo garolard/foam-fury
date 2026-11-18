@@ -1,0 +1,137 @@
+# Builds the dedicated server, pushes the Docker image to ghcr.io and (on a v* tag) publishes a GitHub release with
+# a ready-to-run zip (docker-compose.yaml + config) and the raw Linux binaries.
+#   git tag v0.1.0 && git push origin v0.1.0      -> image :0.1.0 + :latest, release v0.1.0
+#   Actions tab -> "Server" -> Run workflow        -> image :<branch> + :sha-xxxxxxx, no release
+name: Server
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: 4.7.2
+  BLENDER_VERSION: 5.3.0
+  IMAGE: ghcr.io/${{ github.repository_owner }}/foam-fury-server
+
+permissions:
+  contents: write # release
+  packages: write # ghcr.io
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Cache Godot and Blender
+        id: tools
+        uses: actions/cache@v4
+        with:
+          path: ~/tools
+          key: tools-godot${{ env.GODOT_VERSION }}-blender${{ env.BLENDER_VERSION }}
+
+      - name: Download Godot, export templates and Blender
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: |
+          set -eu
+          mkdir -p ~/tools && cd ~/tools
+          base=https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable
+          curl -fsSL -o godot.zip "$base/Godot_v${GODOT_VERSION}-stable_mono_linux_x86_64.zip"
+          unzip -q godot.zip && rm godot.zip && mv Godot_v${GODOT_VERSION}-stable_mono_linux_x86_64 godot
+          mv godot/Godot_v${GODOT_VERSION}-stable_mono_linux.x86_64 godot/godot
+          curl -fsSL -o templates.tpz "$base/Godot_v${GODOT_VERSION}-stable_mono_export_templates.tpz"
+          unzip -q templates.tpz && rm templates.tpz
+          minor=${BLENDER_VERSION%.*}
+          curl -fsSL "https://download.blender.org/release/Blender${minor}/blender-${BLENDER_VERSION}-linux-x64.tar.xz" | tar -xJ
+          mv blender-${BLENDER_VERSION}-linux-x64 blender
+
+      - name: Set up Godot (templates, Blender importer)
+        run: |
+          set -eu
+          sudo apt-get update -q
+          # libraries Blender needs to run in background mode
+          sudo apt-get install -y -q --no-install-recommends libxi6 libxxf86vm1 libxfixes3 libxrender1 libgl1 libegl1 libxkbcommon0 libsm6
+          tdir=~/.local/share/godot/export_templates/${GODOT_VERSION}.stable.mono
+          mkdir -p "$tdir" && cp -r ~/tools/templates/. "$tdir/"
+          mkdir -p ~/.config/godot
+          # the project imports .blend files, so the editor needs a Blender path
+          cat > ~/.config/godot/editor_settings-${GODOT_VERSION%.*}.tres <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          filesystem/import/blender/blender_path = "$HOME/tools/blender/blender"
+          filesystem/import/blender/rpc_port = 0
+          EOF
+          ~/tools/blender/blender --version | head -1
+
+      - name: Export Linux server
+        run: |
+          set -eu
+          godot=~/tools/godot/godot
+          # NuGet.config has a macOS-only local Godot source; the SDK packages also come from nuget.org
+          sed -i '/GodotLocal/d' NuGet.config
+          $godot --headless --path . --import
+          mkdir -p binaries/server
+          $godot --headless --path . --export-release "Linux Server" binaries/server/foam-fury-server.x86_64
+          ls -la binaries/server
+          test -f binaries/server/foam-fury-server.pck
+          # Godot still writes the .pck when the C# build fails; without this folder the server cannot start
+          test -f binaries/server/data_Prototype_linuxbsd_x86_64/Prototype.dll
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=ref,event=branch
+            type=sha
+          labels: |
+            org.opencontainers.image.title=Foam Fury dedicated server
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Package release zips
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -eu
+          ver=${GITHUB_REF_NAME#v}
+          # ready-to-run docker bundle, pinned to this version's image
+          d=dist/foam-fury-server
+          mkdir -p $d/config
+          sed "s|image: .*|image: ${IMAGE}:${ver}|" server/deploy/docker-compose.yaml > $d/docker-compose.yaml
+          cp server/server.cfg.example $d/config/server.cfg
+          cp server/deploy/README.md $d/README.md
+          (cd dist && zip -qr foam-fury-server-${ver}-docker.zip foam-fury-server)
+          # plain binaries for running without docker
+          b=dist/foam-fury-server-linux
+          mkdir -p $b && cp -r binaries/server/. $b/ && cp server/server.cfg.example $b/server.cfg && cp server/SERVER.md $b/
+          (cd dist && zip -qr foam-fury-server-${ver}-linux-x86_64.zip foam-fury-server-linux)
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: |
+            dist/foam-fury-server-*-docker.zip
+            dist/foam-fury-server-*-linux-x86_64.zip
+          generate_release_notes: true

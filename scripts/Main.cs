@@ -6,7 +6,7 @@ public partial class Main : Node3D
     public static Main Instance;
     public static Font TitleFont;
 
-    public enum State { Menu, Playing, Paused, GameOver }
+    public enum State { Menu, Playing, Paused, GameOver, Waiting }
     public State Mode;
 
     public Node3D World;
@@ -23,9 +23,13 @@ public partial class Main : Node3D
 
     // game stats
     public int Score, WaveNumber, Kills, ComboMult = 1;
-    public int ZombiesRemaining => _toSpawn + Zombies.Count;
-    public bool InBreak => _breakTimer > 0;
-    public float BreakTimer => _breakTimer;
+    public int ZombiesRemaining => Net.IsClient ? NetZombiesLeft : _toSpawn + Zombies.Count;
+    public bool InBreak => BreakTimer > 0;
+    public float BreakTimer => Net.IsClient ? NetBreakTimer : _breakTimer;
+    public bool WaveActive => _waveActive;
+    /// Online client: wave counters mirrored from the server.
+    public int NetZombiesLeft;
+    public float NetBreakTimer;
     int _toSpawn, _combo, _best, _bruteQueue;
     float _spawnTimer, _breakTimer, _comboTimer, _time;
     bool _waveActive;
@@ -47,6 +51,8 @@ public partial class Main : Node3D
     {
         Instance = this;
         ProcessMode = ProcessModeEnum.Always;
+        AddChild(new NetGame { Name = "Net" });
+        if (Net.WantsServer) { ServerReady(); return; }
         InputSetup.Init();
         TitleFont ??= new SystemFont { FontNames = new[] { "Impact", "Arial Black", "Helvetica Neue", "Arial" }, FontWeight = 800 };
         Fx.ClearDarts();
@@ -78,6 +84,19 @@ public partial class Main : Node3D
         }
         _auto = OS.GetEnvironment("FF_AUTO") == "1";
 
+        if (!_debugJoined && OS.GetEnvironment("FF_NET") is { Length: > 5 } fn && fn.StartsWith("join:"))
+        {
+            _debugJoined = true;
+            // FF_NET=join:HOST:PORT (+ FF_NAME, FF_CHAR): straight into a server, no menus
+            string name = OS.GetEnvironment("FF_NAME") is { Length: > 0 } nm ? nm : "TESTER";
+            JoinServer(fn.Substring(5), name, GameData.SelectedCharacter, OS.GetEnvironment("FF_PASS"), err =>
+            {
+                GD.PrintErr("[net] " + err);
+                if (OS.GetEnvironment("FF_QUIT") == "1") GetTree().Quit(1);
+                else ShowMenu();
+            });
+            return;
+        }
         if (GameData.SkipMenu) StartGame();
         else ShowMenu();
     }
@@ -101,8 +120,8 @@ public partial class Main : Node3D
         Arena.Detail = detail;
         World.AddChild(Arena);
         _best = GameData.LoadBest(_map);
-        _post.SetShaderParameter("tint", Arena.Style.Tint);
-        _post.SetShaderParameter("lift", Arena.Style.Lift);
+        _post?.SetShaderParameter("tint", Arena.Style.Tint);
+        _post?.SetShaderParameter("lift", Arena.Style.Lift);
     }
 
     // ------------------------------------------------------------------ MENU
@@ -115,6 +134,8 @@ public partial class Main : Node3D
         _menu = new MainMenu();
         AddChild(_menu);
         _menu.BackdropChanged += m => { _map = m; LoadMap(MapBase.BuildMode.Backdrop); };
+        _menu.JoinRequested += (address, name, character, password) =>
+            JoinServer(address, name, character, password, err => _menu?.ServerStatus(err, true));
         _menu.Finished += (c, m) =>
         {
             GameData.SelectedCharacter = c;
@@ -198,14 +219,23 @@ public partial class Main : Node3D
         return list;
     }
 
-    void Banner(string text, string sub, float hold)
+    public void Banner(string text, string sub, float hold)
     {
-        foreach (var p in Players) p.Hud.Banner(text, sub, hold);
+        if (Net.IsServer) { Net.Game?.SendBanner(text, sub, hold); return; }
+        foreach (var p in Players) p.Hud?.Banner(text, sub, hold);
     }
 
-    void Toast(string text, Color color)
+    public void Toast(string text, Color color)
     {
-        foreach (var p in Players) p.Hud.Toast(text, color);
+        if (Net.IsServer) { Net.Game?.SendToast(text, color); return; }
+        foreach (var p in Players) p.Hud?.Toast(text, color);
+    }
+
+    /// A sound everyone hears (wave start, wave clear...). The server forwards it to the clients.
+    void GlobalSfx(string name, float db = 0f)
+    {
+        if (Net.IsServer) Net.Game?.SendSound(name, db);
+        else Sfx.Play(name, db);
     }
 
     /// Nearest player still on their feet (zombie targeting), or null.
@@ -229,6 +259,7 @@ public partial class Main : Node3D
     {
         foreach (var p in Players)
         {
+            if (p.Rig == null) continue; // network puppets have no camera
             float k = Coop ? Mathf.Clamp(1.4f - p.GlobalPosition.DistanceTo(at) / 25f, 0.25f, 1f) : 1f;
             p.Rig.AddTrauma(trauma * k);
             if (duration > 0) p.In.Rumble(weak * k, strong * k, duration);
@@ -256,8 +287,9 @@ public partial class Main : Node3D
         _spawnTimer = 0.5f;
         bool boss = WaveNumber % 5 == 0;
         Banner($"WAVE {WaveNumber}", boss ? "BRUTE HORDE INCOMING" : WaveNumber == 1 ? "here they come" : $"{_toSpawn} zombies", 1.8f);
-        Sfx.Play("wave_start", -2f);
+        GlobalSfx("wave_start", -2f);
         InputSetup.Rumble(0.3f, 0.3f, 0.4f);
+        if (Net.IsServer) GD.Print($"[server] wave {WaveNumber} · {Players.Count} players · score {Score}");
     }
 
     void SpawnZombie()
@@ -286,10 +318,12 @@ public partial class Main : Node3D
             pos = g + new Vector3((float)GD.RandRange(-3, 3), 0, (float)GD.RandRange(-3, 3));
         }
         var z = new Zombie();
+        if (Net.IsServer) z.NetId = NetIds.Next();
         z.Setup(type, WaveNumber, rise);
         World.AddChild(z);
         z.GlobalPosition = pos + Vector3.Up * 0.05f;
         Zombies.Add(z);
+        if (Net.IsServer) Net.Game?.SendZombieSpawned(z);
     }
 
     public void OnZombieKilled(Zombie z, bool headshot, Player killer = null)
@@ -324,27 +358,30 @@ public partial class Main : Node3D
     {
         int total = pts * ComboMult;
         Score += total;
+        if (Net.IsServer) Net.Game?.SendScore(total, at, ComboMult > 1);
         Fx.Number(at, $"+{total}", ComboMult > 1 ? new Color(1f, 0.55f, 0.3f) : new Color(0.7f, 1f, 0.6f), 1.1f);
     }
 
     /// Co-op: someone is down. The run only ends once nobody is left standing.
     public void OnPlayerDowned(Player p)
     {
+        if (Net.IsClient) { Sfx.Play("game_over", -8f); return; } // the server decides what it means
         if (Mode != State.Playing) return;
         Sfx.Play("game_over", -8f);
-        if (AnyStanding) { Toast($"{p.Def.Name} IS DOWN!", new Color(1f, 0.35f, 0.3f)); return; }
+        if (AnyStanding) { Toast($"{p.DisplayName} IS DOWN!", new Color(1f, 0.35f, 0.3f)); return; }
         EndRun();
     }
 
     public void OnPlayerDied(Player p)
     {
-        if (Mode != State.Playing) return;
-        if (Coop && AnyStanding) { Toast($"{p.Def.Name} BLED OUT", new Color(0.8f, 0.6f, 0.6f)); return; }
+        if (Net.IsClient || Mode != State.Playing) return;
+        if ((Coop || Net.IsServer) && AnyStanding) { Toast($"{p.DisplayName} BLED OUT", new Color(0.8f, 0.6f, 0.6f)); return; }
         EndRun();
     }
 
-    void EndRun()
+    public void EndRun()
     {
+        if (Net.IsServer) { ServerEndRun(); return; }
         Mode = State.GameOver;
         Engine.TimeScale = 0.3f;
         Sfx.Play("game_over");
@@ -383,6 +420,7 @@ public partial class Main : Node3D
 
     void TogglePause()
     {
+        if (Net.IsClient) { ToggleOnlinePause(); return; }
         if (Mode == State.Playing)
         {
             Mode = State.Paused;
@@ -508,13 +546,20 @@ public partial class Main : Node3D
         if (_auto && Mode == State.Playing) AutoPlay();
         if (OS.GetEnvironment("FF_ANIMTEST") == "1" && Mode == State.Playing) AnimTest();
 
-        if (Mode == State.Menu) { MenuProcess(dt); return; }
-        if (Input.IsActionJustPressed("pause") && (Mode == State.Playing || Mode == State.Paused)) { TogglePause(); return; }
-        if (Mode == State.Paused && Input.IsActionJustPressed("menu_back")) { TogglePause(); return; }
-        if (Mode != State.Playing) return;
+        if (Net.IsServer) { if (!ServerProcess(dt)) return; }
+        else
+        {
+            if (Mode == State.Menu) { if (_menuCam != null) MenuProcess(dt); return; }
+            if (Net.IsClient && Mode == State.GameOver) { OnlineOverProcess(dt); return; }
+            if (Input.IsActionJustPressed("pause") && (Mode == State.Playing || Mode == State.Paused)) { TogglePause(); return; }
+            if (Mode == State.Paused && Input.IsActionJustPressed("menu_back")) { TogglePause(); return; }
+            if (Mode != State.Playing) return;
 
-        if (Input.MouseMode != Input.MouseModeEnum.Captured && Input.IsMouseButtonPressed(MouseButton.Left) && Players.Exists(p => p.In.Kbm))
-            Input.MouseMode = Input.MouseModeEnum.Captured;
+            if (Input.MouseMode != Input.MouseModeEnum.Captured && Input.IsMouseButtonPressed(MouseButton.Left) && Players.Exists(p => p.In is { Kbm: true }))
+                Input.MouseMode = Input.MouseModeEnum.Captured;
+            // online the server runs waves, spawns, revives and the clock; we just play
+            if (Net.IsClient) return;
+        }
 
         UpdateListener();
         if (Coop) ReviveProcess(dt);
@@ -546,12 +591,22 @@ public partial class Main : Node3D
             {
                 if (!p.Downed && !p.Dead) continue;
                 // bled out: back in the fight next to a teammate
-                if (p.Dead && ClosestTarget(p.GlobalPosition) is { } buddy) p.GlobalPosition = buddy.GlobalPosition + new Vector3(1.2f, 0.3f, 0);
-                p.Revive(0.4f);
+                bool moved = false;
+                if (p.Dead && ClosestTarget(p.GlobalPosition) is { } buddy) { p.GlobalPosition = buddy.GlobalPosition + new Vector3(1.2f, 0.3f, 0); moved = true; }
+                p.Revive(0.4f, moved);
                 revived = true;
             }
+            // online: whoever joined mid-wave drops in now
+            foreach (var p in Players)
+            {
+                if (!p.Benched) continue;
+                p.SetBenched(false);
+                p.Hp = p.MaxHp;
+                p.GlobalPosition = BuddySpot(p);
+                Net.Game?.SendPlayerSpawned(p);
+            }
             Banner($"WAVE {WaveNumber} CLEARED", $"+{bonus:N0} bonus   ·   health restored" + (revived ? "   ·   team revived" : ""), 2.2f);
-            Sfx.Play("wave_clear");
+            GlobalSfx("wave_clear");
             foreach (var p in Players) p.Hp = Mathf.Min(p.MaxHp, p.Hp + p.MaxHp * 0.25f);
             _breakTimer = 7f;
         }
@@ -572,7 +627,7 @@ public partial class Main : Node3D
             if (p.ReviveProgress >= 1f)
             {
                 p.Revive(0.4f);
-                Toast($"{helper.Def.Name} REVIVED {p.Def.Name}", new Color(0.5f, 1f, 0.5f));
+                Toast($"{helper.DisplayName} REVIVED {p.DisplayName}", new Color(0.5f, 1f, 0.5f));
                 AddScore(200, p.GlobalPosition + Vector3.Up * 2f);
             }
         }
@@ -582,7 +637,7 @@ public partial class Main : Node3D
     public Player Reviver(Player downed)
     {
         foreach (var o in Players)
-            if (o != downed && o.Targetable && o.In.Pressed("reload") && o.GlobalPosition.DistanceTo(downed.GlobalPosition) < ReviveRange)
+            if (o != downed && o.Targetable && o.ReviveHeld && o.GlobalPosition.DistanceTo(downed.GlobalPosition) < ReviveRange)
                 return o;
         return null;
     }
@@ -591,8 +646,241 @@ public partial class Main : Node3D
     public Player DownedNear(Player p)
     {
         foreach (var o in Players)
-            if (o != p && o.Downed && o.GlobalPosition.DistanceTo(p.GlobalPosition) < ReviveRange)
+            if (o != p && o.Downed && !o.Dead && o.GlobalPosition.DistanceTo(p.GlobalPosition) < ReviveRange)
                 return o;
         return null;
+    }
+
+    // ================================================================== ONLINE
+    static bool _debugJoined;
+    float _restartT, _overT;
+    Label _overCountdown;
+    Button _readyBtn;
+
+    public Player PlayerById(int id) => id == 0 ? null : Players.Find(p => p.NetId == id);
+    /// Online client: our own player.
+    public Player LocalPlayer => Players.Find(p => p.NetRole == Player.Role.Local);
+
+    /// Spot `i` of `n` on the start line (same as a local co-op run).
+    public Vector3 StartLine(int i, int n) => new((i - (n - 1) / 2f) * 1.5f, 0.1f, 6f);
+
+    /// Next to someone already in the fight (or the start line if nobody is).
+    public Vector3 BuddySpot(Player p)
+    {
+        foreach (var o in Players)
+            if (o != p && o.Targetable) return o.GlobalPosition + new Vector3(1.2f, 0.3f, 0);
+        return StartLine(0, 1);
+    }
+
+    // ---------------------------------------------------------------- dedicated server
+    void ServerReady()
+    {
+        Engine.TimeScale = 1;
+        Engine.MaxFps = 60;
+        Fx.ClearDarts();
+        World = new Node3D { Name = "World", ProcessMode = ProcessModeEnum.Pausable };
+        AddChild(World);
+        var cfg = ServerConfig.Load();
+        _map = cfg.Map;
+        LoadMap(MapBase.BuildMode.Full);
+        Mode = State.Waiting;
+        if (!Net.Game.StartServer(cfg)) GetTree().Quit(1);
+    }
+
+    /// Server side of the frame. Returns true when the shared wave loop should run.
+    bool ServerProcess(float dt)
+    {
+        if (Mode == State.GameOver)
+        {
+            _restartT -= dt;
+            if (_restartT <= 0 || Net.Game.AllReady) ServerBeginRun();
+            return false;
+        }
+        return Mode == State.Playing;
+    }
+
+    /// Fresh run for everyone connected.
+    public void ServerBeginRun()
+    {
+        ServerResetRun(true);
+        GD.Print($"[server] run started · {Players.Count} players");
+    }
+
+    /// Wipe the arena and line everyone up again (no scene reload: the session lives on Main).
+    public void ServerResetRun(bool announce)
+    {
+        ClearWorldEntities();
+        Score = WaveNumber = Kills = 0;
+        ComboMult = 1;
+        _combo = 0; _comboTimer = 0; _toSpawn = 0; _bruteQueue = 0; _spawnTimer = 0;
+        _waveActive = false;
+        _breakTimer = 3.5f;
+        for (int i = 0; i < Players.Count; i++)
+        {
+            Players[i].ResetForRun();
+            Players[i].GlobalPosition = StartLine(i, Players.Count);
+        }
+        Net.Game.ClearReady();
+        Mode = State.Playing;
+        if (!announce) return;
+        Net.Game.SendRunStart();
+        Banner("SURVIVE", "stick together — hold (X) near a downed friend to revive", 1.6f);
+    }
+
+    /// Zombies, pickups, grenades, puddles: everything a run leaves behind.
+    void ClearWorldEntities()
+    {
+        foreach (var z in Zombies) if (IsInstanceValid(z)) z.QueueFree();
+        Zombies.Clear();
+        foreach (var n in NetIds.All()) if (IsInstanceValid(n)) n.QueueFree();
+        NetIds.Clear();
+        foreach (var pd in MudPuddle.All.ToArray()) if (IsInstanceValid(pd)) pd.QueueFree();
+        MudPuddle.All.Clear();
+    }
+
+    void ServerEndRun()
+    {
+        if (Mode != State.Playing) return;
+        Mode = State.GameOver;
+        GlobalSfx("game_over");
+        float delay = Net.Game.Cfg.RestartDelay;
+        _restartT = delay;
+        Net.Game.ClearReady();
+        string stats = $"WAVE {WaveNumber}     KILLS {Kills}\nSCORE {Score:N0}\n"
+            + string.Join("     ", Players.ConvertAll(p => $"{p.DisplayName} {p.Kills}"));
+        Net.Game.SendRunOver("THE HORDE WINS", stats, delay);
+        GD.Print($"[server] game over · wave {WaveNumber} · score {Score} · kills {Kills} · "
+            + string.Join(", ", Players.ConvertAll(p => $"{p.DisplayName}={p.Kills}")));
+    }
+
+    // ---------------------------------------------------------------- client
+    /// Connect to a server; on success the menu goes away and the run begins. `fail` gets the reason otherwise.
+    public void JoinServer(string address, string name, int character, string password, System.Action<string> fail)
+    {
+        var net = Net.Game;
+        System.Action<int> ok = null;
+        System.Action<string> bad = null;
+        ok = map => { net.Accepted -= ok; net.Failed -= bad; OnlineAccepted(map, name, character); };
+        bad = err => { net.Accepted -= ok; net.Failed -= bad; fail?.Invoke(err); };
+        net.Accepted += ok;
+        net.Failed += bad;
+        net.Connect(address, name, character, password ?? "");
+    }
+
+    void OnlineAccepted(int map, string name, int character)
+    {
+        _menu?.QueueFree(); _menu = null;
+        _menuCam?.QueueFree(); _menuCam = null;
+        GameData.Slots.Clear();
+        GameData.SelectedCharacter = character;
+        _map = Mathf.Clamp(map, 0, MapBase.Names.Length - 1);
+        LoadMap();
+        StartGame();
+        var me = Players[0];
+        me.NetId = Net.Game.MyId;
+        me.NetName = name.ToUpper();
+    }
+
+    /// A teammate on another machine.
+    public Player AddPuppet(int id, int character, string name, bool benched, Vector3 pos)
+    {
+        var p = new Player();
+        p.SetupRemote(Mathf.Clamp(character, 0, GameData.Characters.Length - 1), id, name);
+        World.AddChild(p);
+        p.Teleport(pos);
+        p.SetBenched(benched);
+        Players.Add(p);
+        return p;
+    }
+
+    public void RemovePuppet(int id)
+    {
+        var p = PlayerById(id);
+        if (p == null || p.NetRole == Player.Role.Local) return;
+        Players.Remove(p);
+        p.QueueFree();
+    }
+
+    public void ClientRunStart(List<(int id, Vector3 pos, bool benched)> spots)
+    {
+        ClearWorldEntities();
+        _overPanel?.GetParent()?.QueueFree();
+        _overPanel = null; _overCountdown = null; _readyBtn = null;
+        _pausePanel?.GetParent()?.QueueFree();
+        _pausePanel = null;
+        PlayerInput.Blocked = false;
+        Engine.TimeScale = 1;
+        foreach (var (id, pos, benched) in spots)
+        {
+            var p = PlayerById(id);
+            if (p == null) continue;
+            p.ResetForRun();
+            p.SetBenched(benched);
+            p.Teleport(pos);
+        }
+        Mode = State.Playing;
+        Input.MouseMode = Input.MouseModeEnum.Captured;
+    }
+
+    public void ClientRunOver(string title, string stats, float delay)
+    {
+        _pausePanel?.GetParent()?.QueueFree();
+        _pausePanel = null;
+        PlayerInput.Blocked = false;
+        Mode = State.GameOver;
+        Sfx.Play("game_over");
+        Engine.TimeScale = 0.3f;
+        GetTree().CreateTimer(1.0, true, false, true).Timeout += () =>
+        {
+            if (!IsInstanceValid(this)) return;
+            Engine.TimeScale = 1f;
+            if (Mode != State.GameOver) return;
+            Input.MouseMode = Input.MouseModeEnum.Visible;
+            _overT = delay - 1f;
+            _overPanel = MakePanel(title, stats,
+                ("READY", () => { Net.Game?.SendReady(); if (_readyBtn != null) { _readyBtn.Text = "WAITING FOR TEAM…"; _readyBtn.Disabled = true; } }),
+                ("LEAVE SERVER", () => { GameData.NetMessage = null; LeaveServer(); }));
+            _readyBtn = _overPanel.GetChildOrNull<Button>(3);
+            _overCountdown = Hud.MakeLabel("", 26, new Color(0.8f, 0.8f, 0.9f), 6, HorizontalAlignment.Center);
+            _overPanel.AddChild(_overCountdown);
+        };
+    }
+
+    void OnlineOverProcess(float dt)
+    {
+        _overT -= dt;
+        if (_overCountdown != null) _overCountdown.Text = $"NEXT RUN IN {Mathf.Max(0, Mathf.CeilToInt(_overT))}";
+    }
+
+    /// Online pause: a menu over a world that keeps going.
+    void ToggleOnlinePause()
+    {
+        if (_pausePanel == null)
+        {
+            Mode = State.Paused;
+            PlayerInput.Blocked = true;
+            Input.MouseMode = Input.MouseModeEnum.Visible;
+            _pausePanel = MakePanel("PAUSED", $"WAVE {WaveNumber}     SCORE {Score:N0}\n(the horde doesn't wait online)",
+                ("RESUME", ToggleOnlinePause),
+                ("LEAVE SERVER", () => { GameData.NetMessage = null; LeaveServer(); }));
+        }
+        else
+        {
+            Mode = State.Playing;
+            PlayerInput.Blocked = false;
+            Input.MouseMode = Input.MouseModeEnum.Captured;
+            _pausePanel.GetParent()?.QueueFree();
+            _pausePanel = null;
+        }
+    }
+
+    /// Hang up and go back to the server list.
+    public void LeaveServer()
+    {
+        Net.Game?.Close();
+        PlayerInput.Blocked = false;
+        GameData.SkipMenu = false;
+        GameData.MenuStart = (int)MainMenu.Screen.Servers;
+        Restart();
     }
 }

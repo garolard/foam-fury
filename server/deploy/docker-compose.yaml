@@ -1,0 +1,17 @@
+# Foam Fury dedicated server, from the prebuilt image on ghcr.io (no build needed).
+#   docker compose up -d        # start
+#   docker compose logs -f      # follow the log
+#   docker compose restart      # after editing config/server.cfg
+#   docker compose down         # stop
+# Change the port with SERVER_PORT=7790 docker compose up -d (it overrides `port` in server.cfg).
+services:
+  foam-fury-server:
+    image: ghcr.io/garolard/foam-fury-server:latest
+    container_name: foam-fury-server
+    platform: linux/amd64
+    command: ["--config=/config/server.cfg", "--port=${SERVER_PORT:-7777}"]
+    ports:
+      - "${SERVER_PORT:-7777}:${SERVER_PORT:-7777}/udp"
+    volumes:
+      - ./config:/config
+    restart: unless-stopped

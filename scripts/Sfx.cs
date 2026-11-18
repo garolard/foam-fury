@@ -6,6 +6,7 @@ public static class Sfx
 
     public static void Play(string name, float db = 0f, float pitchVar = 0.05f)
     {
+        if (Net.IsServer) return; // headless server: nobody to hear it
         var p = new AudioStreamPlayer { Stream = Assets.Audio(name), VolumeDb = db, Bus = "Master",
             PitchScale = 1f + (float)GD.RandRange(-pitchVar, pitchVar) };
         p.ProcessMode = Node.ProcessModeEnum.Always;
@@ -16,6 +17,7 @@ public static class Sfx
 
     public static void Play3D(string name, Vector3 pos, float db = 0f, float pitchVar = 0.08f, float pitch = 1f)
     {
+        if (Net.IsServer) return;
         var p = new AudioStreamPlayer3D { Stream = Assets.Audio(name), VolumeDb = db, UnitSize = 12f, MaxDb = 4f,
             PitchScale = pitch * (1f + (float)GD.RandRange(-pitchVar, pitchVar)), AttenuationFilterCutoffHz = 12000 };
         Root.AddChild(p);

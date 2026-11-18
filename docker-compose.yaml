@@ -1,0 +1,20 @@
+# Foam Fury dedicated server.
+# Export the "Linux Server" preset first (writes binaries/server/), then:
+#   docker compose up -d --build
+#   docker compose logs -f
+# Config lives in server/config/server.cfg (written with defaults on first run; edit it, then `docker compose restart`).
+# Change the port with SERVER_PORT=7790 docker compose up -d (it overrides `port` in server.cfg).
+services:
+  foam-fury-server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: foam-fury-server
+    container_name: foam-fury-server
+    platform: linux/amd64 # the export is x86_64 (runs under emulation on Apple Silicon)
+    command: ["--config=/config/server.cfg", "--port=${SERVER_PORT:-7777}"]
+    ports:
+      - "${SERVER_PORT:-7777}:${SERVER_PORT:-7777}/udp"
+    volumes:
+      - ./server/config:/config
+    restart: unless-stopped

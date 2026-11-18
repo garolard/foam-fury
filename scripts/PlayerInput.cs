@@ -21,9 +21,12 @@ public class PlayerInput
         return n;
     }
 
-    public bool Pressed(string action) => Input.IsActionPressed(A(action));
-    public bool JustPressed(string action) => Input.IsActionJustPressed(A(action));
-    public Vector2 Move => Input.GetVector(A("move_left"), A("move_right"), A("move_forward"), A("move_back"));
-    public Vector2 Look => Input.GetVector(A("look_left"), A("look_right"), A("look_up"), A("look_down"));
+    /// Online pause menu: the world keeps running, but our player stops listening.
+    public static bool Blocked;
+
+    public bool Pressed(string action) => !Blocked && Input.IsActionPressed(A(action));
+    public bool JustPressed(string action) => !Blocked && Input.IsActionJustPressed(A(action));
+    public Vector2 Move => Blocked ? Vector2.Zero : Input.GetVector(A("move_left"), A("move_right"), A("move_forward"), A("move_back"));
+    public Vector2 Look => Blocked ? Vector2.Zero : Input.GetVector(A("look_left"), A("look_right"), A("look_up"), A("look_down"));
     public void Rumble(float weak, float strong, float duration) => InputSetup.Rumble(Pad, weak, strong, duration);
 }

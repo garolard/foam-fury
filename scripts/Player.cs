@@ -22,7 +22,44 @@ public partial class Player : CharacterBody3D
     public int Kills;
     public const float BleedTime = 15f;
     /// Zombies chase and hit only players that are on their feet.
-    public bool Targetable => !Dead && !Downed;
+    public bool Targetable => !Dead && !Downed && !Benched;
+
+    // ----- online -----
+    /// Local: driven by this machine's input. Remote: a network puppet (teammates on a client, everyone on the server).
+    public enum Role { Local, Remote }
+    public Role NetRole = Role.Local;
+    /// Peer id online (0 offline).
+    public int NetId, CharIndex;
+    public string NetName;
+    public string DisplayName => NetName ?? Def.Name;
+    /// Joined mid-wave: watching until the wave is cleared.
+    public bool Benched;
+    public const int FlagAim = 1, FlagReload = 2, FlagFloor = 4, FlagInvuln = 8, FlagRevive = 16;
+    readonly Interp _interp = new();
+    Vector3 _netPos, _netVel;
+    float _netYaw;
+    int _netFlags, _netWeapon = -1;
+    bool _hasNet;
+    ulong _flameSfxAt;
+
+    public float FacingYaw => _yaw;
+    public bool AimHeld => NetRole == Role.Local ? In.Pressed("aim") : (_netFlags & FlagAim) != 0;
+    /// Holding the revive button (reload) next to a downed teammate.
+    public bool ReviveHeld => NetRole == Role.Local ? In.Pressed("reload") : (_netFlags & FlagRevive) != 0;
+    /// What this player's input/state looks like on the wire.
+    public int NetFlags => NetRole == Role.Remote ? _netFlags
+        : (In.Pressed("aim") && !Downed ? FlagAim : 0) | (ReloadProgress >= 0 ? FlagReload : 0) | (IsOnFloor() ? FlagFloor : 0)
+          | (_invuln > 0 ? FlagInvuln : 0) | (In.Pressed("reload") ? FlagRevive : 0);
+    /// Biggest single-pellet hit this player can deal (server hit validation; headshot doubling happens server side).
+    public float MaxHitDamage
+    {
+        get
+        {
+            float m = 0;
+            foreach (var w in Weapons) m = Mathf.Max(m, w.Damage);
+            return m * Def.DamageMult;
+        }
+    }
 
     public CharacterModel Model;
     public PlayerInput In;
@@ -51,9 +88,26 @@ public partial class Player : CharacterBody3D
         _hud = hud;
         // a dedicated pad (co-op) is always a pad; the solo "any device" slot auto-detects in _Input
         UsingPad = input.Pad >= 0 || !input.Kbm;
-        MaxHp = Hp = def.MaxHp;
-        Grenades = def.Grenades;
-        Weapons = def.Signature != null ? [.. GameData.Weapons, def.Signature] : GameData.Weapons;
+        CharIndex = System.Array.IndexOf(GameData.Characters, def);
+        Loadout();
+    }
+
+    /// Online puppet: no camera, input or HUD; position and pose come from the network.
+    public void SetupRemote(int character, int netId, string name)
+    {
+        CharIndex = character;
+        Def = GameData.Characters[character];
+        NetId = netId;
+        NetName = name;
+        NetRole = Role.Remote;
+        Loadout();
+    }
+
+    void Loadout()
+    {
+        MaxHp = Hp = Def.MaxHp;
+        Grenades = Def.Grenades;
+        Weapons = Def.Signature != null ? [.. GameData.Weapons, Def.Signature] : GameData.Weapons;
         Mag = new int[Weapons.Length];
         Reserve = new int[Weapons.Length];
         for (int i = 0; i < Weapons.Length; i++)
@@ -61,6 +115,24 @@ public partial class Player : CharacterBody3D
             Mag[i] = Weapons[i].MagSize;
             Reserve[i] = Weapons[i].StartReserve;
         }
+    }
+
+    /// Online restart: back to a fresh survivor on their feet.
+    public void ResetForRun()
+    {
+        if (Dead || Downed || Model.Dying) Model.Recover();
+        Dead = Downed = false;
+        Kills = 0;
+        BleedOut = ReviveProgress = 0;
+        Loadout();
+        ReloadProgress = -1f;
+        _knock = Vector3.Zero;
+        Velocity = Vector3.Zero;
+        _dashTime = 0; _snapT = -1f; _throwT = -1f;
+        _invuln = 1f;
+        _gun.Visible = true;
+        EquipWeapon(Weapons.Length - 1, true);
+        SetBenched(false);
     }
 
     public override void _Ready()
@@ -78,9 +150,138 @@ public partial class Player : CharacterBody3D
         AddChild(_gun);
         // signature weapons are the character's identity, so start with it in hand
         EquipWeapon(Weapons.Length - 1, true);
-        _rig.Target = this;
-        _rig.Arm.AddExcludedObject(GetRid());
-        _yaw = _rig.Yaw + Mathf.Pi;
+        if (_rig != null)
+        {
+            _rig.Target = this;
+            _rig.Arm.AddExcludedObject(GetRid());
+            _yaw = _rig.Yaw + Mathf.Pi;
+        }
+        if (NetRole == Role.Remote && !Net.IsServer)
+        {
+            // teammate's name floating over their head
+            AddChild(new Label3D
+            {
+                Text = DisplayName, Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, FontSize = 40, PixelSize = 0.0022f, FixedSize = true,
+                OutlineSize = 10, Font = Main.TitleFont, Position = Vector3.Up * 2.2f, Modulate = new Color(0.6f, 0.9f, 1f),
+            });
+        }
+    }
+
+    /// Hide and park a player who joined mid-wave (or bring them back).
+    public void SetBenched(bool b)
+    {
+        Benched = b;
+        Visible = !b;
+        CollisionLayer = b ? 0u : 2u;
+        if (NetRole == Role.Local) CollisionMask = b ? 0u : 1u | 4u | 16u;
+    }
+
+    /// Jump to a server-chosen spot (spawn, respawn, restart).
+    public void Teleport(Vector3 pos)
+    {
+        GlobalPosition = pos;
+        Velocity = Vector3.Zero;
+        _netPos = pos;
+        _interp.Reset(pos, _yaw);
+        _rig?.Snap();
+    }
+
+    /// Server: latest state reported by the owning client.
+    public void ApplyNetState(Vector3 pos, Vector3 vel, float yaw, Vector3 aim, int flags, int weapon)
+    {
+        _netPos = pos; _netVel = vel; _netYaw = yaw; AimPoint = aim; _netFlags = flags; _netWeapon = weapon;
+        _hasNet = true;
+    }
+
+    /// Client: a teammate's state from a server snapshot (shown ~100 ms behind, interpolated).
+    public void PushNetState(double t, Vector3 pos, Vector3 vel, float yaw, Vector3 aim, int flags, int weapon)
+    {
+        _interp.Push(t, pos, yaw);
+        _netVel = vel; AimPoint = aim; _netFlags = flags; _netWeapon = weapon;
+        _hasNet = true;
+    }
+
+    /// Puppet update: follow the network, animate from the synced state; the server also runs HP rules here.
+    void RemoteProcess(float dt)
+    {
+        _lastShot += dt; _invuln -= dt; _sinceHurt += dt;
+        if (Net.IsServer)
+        {
+            if (_hasNet) { GlobalPosition = _netPos; Velocity = _netVel; }
+            if (Downed)
+            {
+                BleedOut -= dt;
+                if (BleedOut <= 0) { Die(Model.GlobalBasis.Z); return; }
+            }
+            else if (!Dead && !Benched && _sinceHurt > 5f && Hp < MaxHp * 0.5f) Hp = Mathf.Min(MaxHp * 0.5f, Hp + 4f * dt);
+        }
+        else
+        {
+            if (_interp.Get(out var p, out var y)) { GlobalPosition = p; _netYaw = y; }
+            Velocity = _netVel;
+        }
+        if (Dead) return;
+        _yaw = _netYaw;
+        Model.Rotation = new Vector3(0, _yaw, 0);
+        if (_netWeapon >= 0 && _netWeapon < Weapons.Length && _netWeapon != WeaponIndex) EquipWeapon(_netWeapon, true);
+        if ((_netFlags & FlagReload) != 0)
+            ReloadProgress = ReloadProgress < 0 ? 0 : Mathf.Min(0.98f, ReloadProgress + dt / (Weapon.ReloadTime * Def.ReloadMult));
+        else ReloadProgress = -1f;
+        if (Downed || Net.IsServer) return;
+        var flat = new Vector3(_netVel.X, 0, _netVel.Z).Length();
+        if ((_netFlags & FlagFloor) == 0) Model.Play("jump", 1f, 0.15f);
+        else if (flat > 0.5f) Model.Play("run", Mathf.Clamp(flat / 6.2f, 0.6f, 1.4f) * 1.1f);
+        else Model.Play("idle");
+    }
+
+    /// Spectating until the wave is cleared: ride along with a teammate, look around.
+    void BenchedProcess(float dt)
+    {
+        var look = In.Look;
+        _rig.Yaw -= look.X * Mathf.Abs(look.X) * 3.6f * dt;
+        _rig.Pitch -= look.Y * Mathf.Abs(look.Y) * 2.4f * dt;
+        _rig.Aiming = false;
+        foreach (var o in Main.Instance.Players)
+            if (o != this && !o.Benched) { GlobalPosition = o.GlobalPosition; break; }
+        Velocity = Vector3.Zero;
+    }
+
+    /// Server: someone fired. Flame is simulated here (damage); darts and mud are reported back as hits.
+    public void ServerFired(int w, Vector3 muzzle, Vector3[] dirs)
+    {
+        _lastShot = 0;
+        var wd = Weapons[w];
+        if (wd.Kind != FireKind.Flame) return;
+        foreach (var d in dirs) FlameJet.Fire(muzzle, d, _netVel, wd, Def.DamageMult, this);
+    }
+
+    /// Client: a teammate fired; show it (their shots don't deal damage on this machine).
+    public void RemoteFired(int w, Vector3 muzzle, Vector3[] dirs)
+    {
+        if (w >= Weapons.Length || dirs.Length == 0) return;
+        if (w != WeaponIndex) EquipWeapon(w, true);
+        var wd = Weapons[w];
+        _lastShot = 0;
+        _armBlend = Mathf.Max(_armBlend, 0.7f);
+        foreach (var d in dirs)
+        {
+            switch (wd.Kind)
+            {
+                case FireKind.Mud: MudGlob.Fire(muzzle, d, wd, 1f, GetRid(), this, true); break;
+                case FireKind.Flame: FlameJet.Fire(muzzle, d, Velocity, wd, 1f, this, true); break;
+                default: Projectile.Fire(muzzle, d, wd, 1f, GetRid(), this, true); break;
+            }
+        }
+        if (wd.Kind == FireKind.Flame)
+        {
+            Fx.Flash(muzzle, wd.Tracer, 2.5f, 6f, 0.1f);
+            if (Time.GetTicksMsec() > _flameSfxAt) { Sfx.Play3D(wd.Sound, muzzle, -6f, 0.08f); _flameSfxAt = Time.GetTicksMsec() + 180; }
+        }
+        else
+        {
+            Fx.MuzzleFlash(muzzle, dirs[0], wd.Tracer);
+            Sfx.Play3D(wd.Sound, muzzle, wd.Pellets > 1 ? 0f : -3f, 0.06f);
+        }
     }
 
     void EquipWeapon(int i, bool force = false)
@@ -108,14 +309,14 @@ public partial class Player : CharacterBody3D
     public override void _Input(InputEvent e)
     {
         // only the solo "any device" slot mixes pad and keyboard+mouse
-        if (In.Pad != InputSetup.AnyPad || !In.Kbm) return;
+        if (In == null || In.Pad != InputSetup.AnyPad || !In.Kbm) return;
         if (e is InputEventJoypadButton || (e is InputEventJoypadMotion jm && Mathf.Abs(jm.AxisValue) > 0.3f)) UsingPad = true;
         else if (e is InputEventMouseMotion || e is InputEventKey || e is InputEventMouseButton) UsingPad = false;
     }
 
     public override void _UnhandledInput(InputEvent e)
     {
-        if (Dead || !In.Kbm) return;
+        if (Dead || In == null || !In.Kbm) return;
         if (e is InputEventMouseMotion mm && Input.MouseMode == Input.MouseModeEnum.Captured)
         {
             float sens = 0.0025f * (In.Pressed("aim") ? 0.6f : 1f);
@@ -127,6 +328,8 @@ public partial class Player : CharacterBody3D
     public override void _PhysicsProcess(double delta)
     {
         float dt = (float)delta;
+        if (NetRole == Role.Remote) { RemoteProcess(dt); return; }
+        if (Benched) { BenchedProcess(dt); return; }
         if (Dead)
         {
             var v = Velocity; v.X = Mathf.MoveToward(v.X, 0, dt * 20); v.Z = Mathf.MoveToward(v.Z, 0, dt * 20);
@@ -249,8 +452,8 @@ public partial class Player : CharacterBody3D
         float moveSpread = flat > 0.5f ? 1.5f : 1f;
         Spread = Weapon.Spread * (aiming ? 0.5f : 1f) * moveSpread + _bloom;
 
-        // regen up to 50%
-        if (_sinceHurt > 5f && Hp < MaxHp * 0.5f) Hp = Mathf.Min(MaxHp * 0.5f, Hp + 4f * dt);
+        // regen up to 50% (online the server owns HP)
+        if (!Net.IsClient && _sinceHurt > 5f && Hp < MaxHp * 0.5f) Hp = Mathf.Min(MaxHp * 0.5f, Hp + 4f * dt);
 
         if (GlobalPosition.Y < -10) { GlobalPosition = new Vector3(0, 1, 6); Velocity = Vector3.Zero; }
     }
@@ -258,8 +461,8 @@ public partial class Player : CharacterBody3D
     public override void _Process(double delta)
     {
         float dt = (float)delta;
-        if (Dead || Downed) return; // the death/downed animation owns the pose now
-        bool armsUp = In.Pressed("aim") || _lastShot < 0.8f || ReloadProgress >= 0;
+        if (Dead || Downed || Benched || Net.IsServer) return; // the death/downed animation owns the pose now
+        bool armsUp = AimHeld || _lastShot < 0.8f || ReloadProgress >= 0;
         _armBlend = Mathf.MoveToward(_armBlend, armsUp ? 1f : 0f, dt * 8f);
         float blend = Mathf.SmoothStep(0, 1, _armBlend);
         _kick *= Mathf.Exp(-14f * dt);
@@ -425,16 +628,20 @@ public partial class Player : CharacterBody3D
         var baseDir = (AimPoint - muzzle).Normalized();
         // if aim point is behind the muzzle (very close geometry) use camera dir
         if (baseDir.Dot(-_rig.Camera.GlobalBasis.Z) < 0.3f) baseDir = -_rig.Camera.GlobalBasis.Z;
+        var sent = Net.IsClient ? new System.Collections.Generic.List<Vector3>(w.Pellets) : null;
         for (int i = 0; i < w.Pellets; i++)
         {
             var dir = ApplySpread(baseDir, Spread);
+            sent?.Add(dir);
             switch (w.Kind)
             {
                 case FireKind.Mud: MudGlob.Fire(muzzle, dir, w, Def.DamageMult, GetRid(), this); break;
-                case FireKind.Flame: FlameJet.Fire(muzzle, dir, Velocity, w, Def.DamageMult, this); break;
+                // online the server burns things; our own stream is just for show
+                case FireKind.Flame: FlameJet.Fire(muzzle, dir, Velocity, w, Def.DamageMult, this, Net.IsClient); break;
                 default: Projectile.Fire(muzzle, dir, w, Def.DamageMult, GetRid(), this); break;
             }
         }
+        if (sent != null) Net.Game?.SendFired(WeaponIndex, muzzle, sent);
         if (w.Kind == FireKind.Flame)
         {
             Fx.Flash(muzzle, w.Tracer, 2.5f, 6f, 0.1f);
@@ -471,7 +678,9 @@ public partial class Player : CharacterBody3D
         Grenades--;
         var dir = -_rig.Camera.GlobalBasis.Z;
         var pos = GlobalPosition + Vector3.Up * 1.6f + new Vector3(dir.X, 0, dir.Z).Normalized() * 0.6f;
-        Grenade.Throw(pos, dir * 15f + Vector3.Up * 4.5f + new Vector3(Velocity.X, 0, Velocity.Z) * 0.5f, Def.BlastMult, this);
+        var vel = dir * 15f + Vector3.Up * 4.5f + new Vector3(Velocity.X, 0, Velocity.Z) * 0.5f;
+        if (Net.IsClient) Net.Game?.SendGrenade(pos, vel); // the server throws the real one
+        else Grenade.Throw(pos, vel, Def.BlastMult, this);
         Sfx.Play("throw");
         _throwT = 0f;
         _lastShot = 0.3f;
@@ -479,24 +688,39 @@ public partial class Player : CharacterBody3D
 
     public void TakeDamage(float dmg, Vector3 dir, float knock)
     {
-        if (Dead || Downed || _invuln > 0) return;
+        if (Dead || Downed || Benched || _invuln > 0) return;
+        if (NetRole == Role.Remote && (_netFlags & FlagInvuln) != 0) return; // dashing on their screen
         Hp -= dmg;
         _invuln = 0.45f;
         _sinceHurt = 0;
-        _knock += dir * knock;
+        if (Net.IsServer) Net.Game?.SendPlayerHurt(this, dmg, dir, knock);
+        else HurtFeedback(dmg, dir, knock);
+        if (Hp <= 0)
+        {
+            Hp = 0;
+            if (Main.Instance.Coop || Net.IsServer) GoDown();
+            else Die(dir);
+        }
+    }
+
+    /// Getting hit: knockback, flinch, shake, sound (online this runs when the server says we were hit).
+    public void HurtFeedback(float dmg, Vector3 dir, float knock)
+    {
         Model.Flash(0.8f);
+        if (NetRole == Role.Remote) return;
+        _invuln = Mathf.Max(_invuln, 0.45f);
+        _sinceHurt = 0;
+        _knock += dir * knock;
         _hurtFlinch = 1f;
         _rig.AddTrauma(0.45f);
         In.Rumble(0.6f, 0.8f, 0.25f);
         Sfx.Play("hurt", 0f, 0.1f);
         _hud?.Hurt(dmg / MaxHp);
-        if (Hp <= 0)
-        {
-            Hp = 0;
-            if (Main.Instance.Coop) GoDown();
-            else Die(dir);
-        }
     }
+
+    /// Server said we went down / died (no-op if we already are).
+    public void NetGoDown() { if (!Downed && !Dead) GoDown(); }
+    public void NetDie(Vector3 dir) { if (!Dead) Die(dir); }
 
     void Die(Vector3 dir)
     {
@@ -507,7 +731,8 @@ public partial class Player : CharacterBody3D
         var flat = new Vector3(dir.X, 0, dir.Z).Normalized();
         bool fromBehind = flat.Dot(Model.GlobalBasis.Z.Normalized()) > 0.3f;
         Model.PlayDeath(fromBehind ? DeathKind.Crumple : DeathKind.FallBack, dir);
-        In.Rumble(1f, 1f, 0.8f);
+        In?.Rumble(1f, 1f, 0.8f);
+        if (Net.IsServer) Net.Game?.SendPlayerDied(this, dir);
         Main.Instance.OnPlayerDied(this);
     }
 
@@ -521,14 +746,16 @@ public partial class Player : CharacterBody3D
         _dashTime = 0; _snapT = -1f; _throwT = -1f;
         _knock = Vector3.Zero;
         _gun.Visible = false;
-        _rig.Aiming = false;
+        if (_rig != null) _rig.Aiming = false;
         Model.PlayDowned();
-        In.Rumble(1f, 0.8f, 0.5f);
+        In?.Rumble(1f, 0.8f, 0.5f);
+        if (Net.IsServer) Net.Game?.SendPlayerDowned(this);
         Main.Instance.OnPlayerDowned(this);
     }
 
     /// Back on the feet (teammate revive, or wave clear for the downed and the dead).
-    public void Revive(float hpFrac)
+    /// `moved`: the server teleported us (respawn next to a teammate).
+    public void Revive(float hpFrac, bool moved = false)
     {
         if (!Downed && !Dead) return;
         Downed = false;
@@ -541,18 +768,23 @@ public partial class Player : CharacterBody3D
         Model.Recover();
         _gun.Visible = true;
         Sfx.Play("pickup", -2f);
-        In.Rumble(0.3f, 0.3f, 0.2f);
+        In?.Rumble(0.3f, 0.3f, 0.2f);
+        if (Net.IsServer) Net.Game?.SendPlayerRevived(this, moved);
     }
 
     /// While downed: bleed out, look around, crawl slowly toward help.
     void DownedProcess(float dt)
     {
-        BleedOut -= dt;
-        if (BleedOut <= 0)
+        // online the server runs the clock (and tells us when we bled out)
+        if (!Net.IsClient)
         {
-            // fall forward from the slump
-            Die(Model.GlobalBasis.Z);
-            return;
+            BleedOut -= dt;
+            if (BleedOut <= 0)
+            {
+                // fall forward from the slump
+                Die(Model.GlobalBasis.Z);
+                return;
+            }
         }
         var look = In.Look;
         _rig.Yaw -= look.X * Mathf.Abs(look.X) * 3.6f * dt;
@@ -575,31 +807,47 @@ public partial class Player : CharacterBody3D
         }
     }
 
+    /// Would this pickup do anything for us right now?
+    public bool CanCollect(PickupKind kind) => kind switch
+    {
+        PickupKind.Health => Hp < MaxHp,
+        PickupKind.Grenade => Grenades < 9,
+        _ => true,
+    };
+
     public bool TryCollect(PickupKind kind)
+    {
+        if (!CanCollect(kind)) return false;
+        ApplyCollect(kind, true, true);
+        return true;
+    }
+
+    /// `authority`: HP and score (the server online). `local`: ammo, grenades and feedback (the owner).
+    public void ApplyCollect(PickupKind kind, bool authority, bool local)
     {
         switch (kind)
         {
             case PickupKind.Health:
-                if (Hp >= MaxHp) return false;
-                Hp = Mathf.Min(MaxHp, Hp + MaxHp * 0.35f);
-                _hud?.Toast("+HEALTH", new Color(1f, 0.35f, 0.4f));
+                if (authority) Hp = Mathf.Min(MaxHp, Hp + MaxHp * 0.35f);
+                if (local) _hud?.Toast("+HEALTH", new Color(1f, 0.35f, 0.4f));
                 break;
             case PickupKind.Ammo:
+                if (!local) break;
                 for (int i = 0; i < Weapons.Length; i++)
                     if (Reserve[i] >= 0) Reserve[i] = Mathf.Min(Weapons[i].MaxReserve, Reserve[i] + Weapons[i].AmmoPickup);
                 _hud?.Toast("+AMMO", new Color(1f, 0.8f, 0.2f));
                 break;
             case PickupKind.Grenade:
-                if (Grenades >= 9) return false;
-                Grenades++;
+                if (!local) break;
+                Grenades = Mathf.Min(9, Grenades + 1);
                 _hud?.Toast("+GRENADE", new Color(0.4f, 1f, 0.4f));
                 break;
             case PickupKind.Coin:
-                Main.Instance.AddScore(250, GlobalPosition + Vector3.Up * 2f);
+                if (authority) Main.Instance.AddScore(250, GlobalPosition + Vector3.Up * 2f);
                 break;
         }
+        if (!local) return;
         Sfx.Play("pickup", -2f);
-        In.Rumble(0.2f, 0f, 0.06f);
-        return true;
+        In?.Rumble(0.2f, 0f, 0.06f);
     }
 }

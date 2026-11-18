@@ -10,12 +10,14 @@ public partial class Projectile : Node3D
     readonly Godot.Collections.Array<Rid> _exclude = new();
     readonly HashSet<Zombie> _hit = new();
     Player _source;
+    /// A teammate's shot on our screen (online): looks the same, hurts nothing.
+    bool _visual;
 
     static CylinderMesh _tracerMesh;
 
-    public static void Fire(Vector3 pos, Vector3 dir, WeaponDef w, float damageMult, Rid ownerRid, Player source = null)
+    public static void Fire(Vector3 pos, Vector3 dir, WeaponDef w, float damageMult, Rid ownerRid, Player source = null, bool visual = false)
     {
-        var p = new Projectile { _source = source };
+        var p = new Projectile { _source = source, _visual = visual };
         p._dir = dir.Normalized();
         p._speed = w.ProjectileSpeed;
         p._damage = w.Damage * damageMult;
@@ -58,7 +60,7 @@ public partial class Projectile : Node3D
             var col = hit["collider"].AsGodotObject();
             if (col is Zombie z)
             {
-                if (!_hit.Contains(z))
+                if (!_hit.Contains(z) && !_visual)
                 {
                     _hit.Add(z);
                     z.TakeDamage(_damage, pos, _dir, z.IsHeadshot(hit["shape"].AsInt32()), source: _source);

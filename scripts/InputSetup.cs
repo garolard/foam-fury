@@ -131,7 +131,7 @@ public static class InputSetup
     /// Vibrate one pad (AnyPad = all of them, NoPad = none).
     public static void Rumble(int pad, float weak, float strong, float duration)
     {
-        if (pad == NoPad) return;
+        if (pad == NoPad || Net.IsServer) return;
         foreach (int id in Input.GetConnectedJoypads())
             if (pad < 0 || id == pad)
                 Input.StartJoyVibration(id, Mathf.Clamp(weak, 0, 1), Mathf.Clamp(strong, 0, 1), duration);

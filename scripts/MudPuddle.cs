@@ -22,6 +22,10 @@ public partial class MudPuddle : Node3D
     OmniLight3D _light;
     /// Who lit this puddle (kill credit for the burn), if anyone.
     Player _igniter;
+    /// Online: server id; replicas only show what the server's puddle does.
+    public int NetId;
+    bool _replica;
+    public bool Removed => _dying;
 
     public static Vector3? FindFloor(PhysicsDirectSpaceState3D space, Vector3 from, float depth = 8f)
     {
@@ -40,13 +44,32 @@ public partial class MudPuddle : Node3D
         }
         while (All.Count >= MaxPuddles) All[0].Remove();
         var np = new MudPuddle { Radius = radius * (float)GD.RandRange(0.9, 1.1) };
+        if (Net.IsServer) np.NetId = NetIds.Next();
         Main.Instance.World.AddChild(np);
         np.GlobalPosition = pos;
+        if (Net.IsServer) Net.Game?.SendPuddleSpawned(np);
+    }
+
+    public static void SpawnReplica(int id, Vector3 pos, float radius, bool burning)
+    {
+        if (NetIds.Get<MudPuddle>(id) != null) return;
+        var np = new MudPuddle { Radius = radius, NetId = id, _replica = true };
+        Main.Instance.World.AddChild(np);
+        np.GlobalPosition = pos;
+        if (burning) np.Ignite();
+    }
+
+    /// Replica: the server's puddle grew.
+    public void SetRadius(float r)
+    {
+        Radius = r;
+        _visual.CreateTween().TweenProperty(_visual, "scale", new Vector3(Radius, 1f, Radius), 0.15f);
     }
 
     /// Ignite every puddle touched by a fire of the given radius at `pos`.
     public static void IgniteAt(Vector3 pos, float radius, Player source = null)
     {
+        if (Net.IsClient) return; // the server decides what burns
         foreach (var p in All.ToArray())
             if (!p.Burning && p.Touches(pos, radius)) p.Ignite(source);
     }
@@ -59,8 +82,8 @@ public partial class MudPuddle : Node3D
         return dy > -0.8f - extra && dy < 1.2f + extra && Flat(point - GlobalPosition) < Radius + extra;
     }
 
-    public override void _EnterTree() => All.Add(this);
-    public override void _ExitTree() => All.Remove(this);
+    public override void _EnterTree() { All.Add(this); NetIds.Add(NetId, this); }
+    public override void _ExitTree() { All.Remove(this); NetIds.Remove(NetId, this); }
 
     public override void _Ready()
     {
@@ -93,11 +116,13 @@ public partial class MudPuddle : Node3D
         if (Radius >= 2.6f) return;
         Radius = Mathf.Min(2.6f, Radius + 0.3f);
         _visual.CreateTween().TweenProperty(_visual, "scale", new Vector3(Radius, 1f, Radius), 0.15f);
+        if (Net.IsServer) Net.Game?.SendPuddleGrew(this);
     }
 
     public void Ignite(Player source = null)
     {
         if (Burning || _dying) return;
+        if (Net.IsServer) Net.Game?.SendPuddleIgnited(this);
         _igniter = source;
         _burnT = 0f;
         _spreadCd = 0.15f;
@@ -123,6 +148,16 @@ public partial class MudPuddle : Node3D
     {
         if (_dying) return;
         float dt = (float)delta;
+        if (_replica)
+        {
+            // only the look: char and flicker while burning; the server removes it
+            if (!Burning) return;
+            _burnT += dt;
+            float kr = Mathf.Min(1f, _burnT / BurnTime);
+            _mat.AlbedoColor = MudGlob.MudColor.Lerp(new Color(0.06f, 0.05f, 0.05f), Mathf.Min(1, kr * 1.5f));
+            _light.LightEnergy = (3f + Mathf.Sin(_burnT * 23f) * 0.7f) * (1f - kr * kr);
+            return;
+        }
         var zombies = Main.Instance.Zombies;
 
         if (!Burning)
@@ -159,10 +194,11 @@ public partial class MudPuddle : Node3D
         if (_burnT >= BurnTime) Remove();
     }
 
-    void Remove()
+    public void Remove()
     {
         if (_dying) return;
         _dying = true;
+        if (Net.IsServer) Net.Game?.SendPuddleRemoved(this);
         All.Remove(this);
         if (_fire != null) _fire.Emitting = false;
         var tw = CreateTween().SetParallel();
