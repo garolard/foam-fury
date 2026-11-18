@@ -487,7 +487,7 @@ public partial class MainMenu : CanvasLayer
             ("RT", "Fire"), ("LT", "Aim / lock on"),
             ("A", "Jump"), ("B", "Dash"),
             ("X", "Reload"), ("Y", "Throw grenade"),
-            ("LB / RB", "Switch weapon"), ("D-PAD", "Select weapon slot"),
+            ("LB / RB", "Switch weapon"), ("D-PAD", "Select grenade type"),
             ("START", "Pause"), ("HOLD X", "Revive a teammate"),
         });
         content.AddChild(_padMapGrid);
@@ -498,8 +498,8 @@ public partial class MainMenu : CanvasLayer
             ("LEFT CLICK", "Fire"), ("RIGHT CLICK", "Aim / lock on"),
             ("SPACE", "Jump"), ("SHIFT", "Dash"),
             ("R", "Reload"), ("G", "Throw grenade"),
-            ("Q / E / WHEEL", "Switch weapon"), ("1–5", "Select weapon slot"),
-            ("ESC", "Pause"), ("HOLD X", "Revive a teammate"),
+            ("Q / E / WHEEL", "Switch weapon"), ("1–4", "Select grenade type"),
+            ("5", "Signature weapon"), ("ESC", "Pause"), ("HOLD X", "Revive a teammate"),
         });
         content.AddChild(_keyboardMapGrid);
 
