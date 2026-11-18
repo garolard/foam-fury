@@ -116,7 +116,7 @@ public partial class NetGame
         ToServer(new NetWriter(Msg.Hit).I(z.NetId).F(dmg).V(pos).V(dir).B((head ? 1 : 0) | (explosive ? 2 : 0) | (minor ? 4 : 0)).F(knock));
     public void SendSlow(Zombie z, float mul, float time) => ToServer(new NetWriter(Msg.Slow).I(z.NetId).F(mul).F(time));
     public void SendMudLanded(Vector3 pos) => ToServer(new NetWriter(Msg.MudLanded).V(pos));
-    public void SendGrenade(Vector3 pos, Vector3 vel) => ToServer(new NetWriter(Msg.Grenade).V(pos).V(vel));
+    public void SendGrenade(Vector3 pos, Vector3 vel, int type) => ToServer(new NetWriter(Msg.Grenade).V(pos).V(vel).I(type));
     public void SendTakePickup(Pickup p) => ToServer(new NetWriter(Msg.TakePickup).I(p.NetId));
     public void SendReady() => ToServer(new NetWriter(Msg.Ready));
 
@@ -287,10 +287,10 @@ public partial class NetGame
                 NetIds.Get<Pickup>(r.I())?.QueueFree();
                 break;
             case Msg.GrenadeSpawned:
-                Grenade.SpawnReplica(r.I(), r.V(), r.V(), r.V());
+                Grenade.SpawnReplica(r.I(), r.V(), r.V(), r.V(), r.I());
                 break;
             case Msg.GrenadeExploded:
-                Grenade.ExplodeReplica(r.I(), r.V(), r.F());
+                Grenade.ExplodeReplica(r.I(), r.V(), r.F(), r.I());
                 break;
             case Msg.PuddleSpawned:
                 MudPuddle.SpawnReplica(r.I(), r.V(), r.F(), r.Bool());
