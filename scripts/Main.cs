@@ -6,7 +6,7 @@ public partial class Main : Node3D
     public static Main Instance;
     public static Font TitleFont;
 
-    public enum State { Menu, Playing, Paused, GameOver, Waiting }
+    public enum State { Menu, Playing, Paused, GameOver, Lobby }
     public State Mode;
 
     public Node3D World;
@@ -51,7 +51,12 @@ public partial class Main : Node3D
     {
         Instance = this;
         ProcessMode = ProcessModeEnum.Always;
-        AddChild(new NetGame { Name = "Net" });
+        if (!IsInstanceValid(Net.Game))
+        {
+            // beside Main so an online client keeps its connection across scene reloads
+            Net.Game = new NetGame { Name = "Net" };
+            GetTree().Root.CallDeferred(Node.MethodName.AddChild, Net.Game);
+        }
         if (Net.WantsServer) { ServerReady(); return; }
         InputSetup.Init();
         TitleFont ??= new SystemFont { FontNames = new[] { "Impact", "Arial Black", "Helvetica Neue", "Arial" }, FontWeight = 800 };
@@ -97,9 +102,15 @@ public partial class Main : Node3D
             });
             return;
         }
-        if (GameData.SkipMenu) StartGame();
+        if (Net.IsClient) ShowMenu((int)MainMenu.Screen.Lobby); // back from a match, still connected
+        else if (GameData.SkipMenu) StartGame();
         else ShowMenu();
     }
+
+    public override void _ExitTree() { if (Instance == this) Instance = null; }
+
+    /// Stage currently loaded.
+    public int MapIndex => _map;
 
     ShaderMaterial _post;
 
@@ -125,7 +136,7 @@ public partial class Main : Node3D
     }
 
     // ------------------------------------------------------------------ MENU
-    void ShowMenu()
+    void ShowMenu(int? screen = null)
     {
         Mode = State.Menu;
         Input.MouseMode = Input.MouseModeEnum.Visible;
@@ -145,7 +156,7 @@ public partial class Main : Node3D
             LoadMap();
             StartGame();
         };
-        int start = OS.GetEnvironment("FF_MENU") is { Length: > 0 } fs ? int.Parse(fs) : GameData.MenuStart;
+        int start = screen ?? (OS.GetEnvironment("FF_MENU") is { Length: > 0 } fs ? int.Parse(fs) : GameData.MenuStart);
         _menu.Open((MainMenu.Screen)start);
     }
 
@@ -683,7 +694,7 @@ public partial class Main : Node3D
         var cfg = ServerConfig.Load();
         _map = cfg.Map;
         LoadMap(MapBase.BuildMode.Full);
-        Mode = State.Waiting;
+        Mode = State.Lobby;
         if (!Net.Game.StartServer(cfg)) GetTree().Quit(1);
     }
 
@@ -693,7 +704,7 @@ public partial class Main : Node3D
         if (Mode == State.GameOver)
         {
             _restartT -= dt;
-            if (_restartT <= 0 || Net.Game.AllReady) ServerBeginRun();
+            if (_restartT <= 0 || Net.Game.AllReady) Net.Game.ServerReturnToLobby();
             return false;
         }
         return Mode == State.Playing;
@@ -727,6 +738,28 @@ public partial class Main : Node3D
         Banner("SURVIVE", "stick together — hold (X) near a downed friend to revive", 1.6f);
     }
 
+    /// The host picked a stage: build it (players are added by NetGame right after).
+    public void ServerLoadStage(int map)
+    {
+        ServerClearMatch();
+        _map = map;
+        LoadMap(MapBase.BuildMode.Full);
+    }
+
+    /// Back to an empty arena with nobody in it (the lobby).
+    public void ServerClearMatch()
+    {
+        ClearWorldEntities();
+        foreach (var p in Players) { p.Dead = true; p.QueueFree(); }
+        Players.Clear();
+        Score = WaveNumber = Kills = 0;
+        ComboMult = 1;
+        _combo = 0; _comboTimer = 0; _toSpawn = 0; _bruteQueue = 0; _spawnTimer = 0;
+        _waveActive = false;
+        _breakTimer = 0;
+        Mode = State.Lobby;
+    }
+
     /// Zombies, pickups, grenades, puddles: everything a run leaves behind.
     void ClearWorldEntities()
     {
@@ -754,31 +787,49 @@ public partial class Main : Node3D
     }
 
     // ---------------------------------------------------------------- client
-    /// Connect to a server; on success the menu goes away and the run begins. `fail` gets the reason otherwise.
+    /// Connect to a server; on success the menu switches to the online lobby. `fail` gets the reason otherwise.
     public void JoinServer(string address, string name, int character, string password, System.Action<string> fail)
     {
         var net = Net.Game;
         System.Action<int> ok = null;
         System.Action<string> bad = null;
-        ok = map => { net.Accepted -= ok; net.Failed -= bad; OnlineAccepted(map, name, character); };
+        ok = _ => { net.Accepted -= ok; net.Failed -= bad; OnlineAccepted(); };
         bad = err => { net.Accepted -= ok; net.Failed -= bad; fail?.Invoke(err); };
         net.Accepted += ok;
         net.Failed += bad;
         net.Connect(address, name, character, password ?? "");
     }
 
-    void OnlineAccepted(int map, string name, int character)
+    void OnlineAccepted()
     {
+        GameData.Slots.Clear();
+        if (_menu != null) _menu.EnterOnlineLobby();
+        else ShowMenu((int)MainMenu.Screen.Lobby);
+    }
+
+    /// The match is starting (or we confirmed into a running one): load the stage and spawn our player.
+    public void ClientEnterMatch(int map)
+    {
+        var me = Net.Game.Me;
         _menu?.QueueFree(); _menu = null;
         _menuCam?.QueueFree(); _menuCam = null;
         GameData.Slots.Clear();
-        GameData.SelectedCharacter = character;
-        _map = Mathf.Clamp(map, 0, MapBase.Names.Length - 1);
+        GameData.SelectedCharacter = me?.Character ?? GameData.SelectedCharacter;
+        GameData.SelectedMap = _map = Mathf.Clamp(map, 0, MapBase.Names.Length - 1);
         LoadMap();
         StartGame();
-        var me = Players[0];
-        me.NetId = Net.Game.MyId;
-        me.NetName = name.ToUpper();
+        var p = Players[0];
+        p.NetId = Net.Game.MyId;
+        p.NetName = me?.Name ?? GameData.LoadPlayerName().ToUpper();
+    }
+
+    /// The server sent us back to the lobby (match over, or we asked to change survivor). Still connected.
+    public void ClientToLobby()
+    {
+        PlayerInput.Blocked = false;
+        GameData.SkipMenu = false;
+        GameData.MenuStart = (int)MainMenu.Screen.Lobby;
+        Restart();
     }
 
     /// A teammate on another machine.
@@ -849,7 +900,7 @@ public partial class Main : Node3D
     void OnlineOverProcess(float dt)
     {
         _overT -= dt;
-        if (_overCountdown != null) _overCountdown.Text = $"NEXT RUN IN {Mathf.Max(0, Mathf.CeilToInt(_overT))}";
+        if (_overCountdown != null) _overCountdown.Text = $"BACK TO THE LOBBY IN {Mathf.Max(0, Mathf.CeilToInt(_overT))}";
     }
 
     /// Online pause: a menu over a world that keeps going.
@@ -860,9 +911,11 @@ public partial class Main : Node3D
             Mode = State.Paused;
             PlayerInput.Blocked = true;
             Input.MouseMode = Input.MouseModeEnum.Visible;
-            _pausePanel = MakePanel("PAUSED", $"WAVE {WaveNumber}     SCORE {Score:N0}\n(the horde doesn't wait online)",
-                ("RESUME", ToggleOnlinePause),
-                ("LEAVE SERVER", () => { GameData.NetMessage = null; LeaveServer(); }));
+            var buttons = new List<(string, System.Action)> { ("RESUME", ToggleOnlinePause) };
+            // spectators can go back and pick someone else
+            if (LocalPlayer is { Benched: true }) buttons.Add(("CHANGE SURVIVOR", () => Net.Game?.SendBackToLobby()));
+            buttons.Add(("LEAVE SERVER", () => { GameData.NetMessage = null; LeaveServer(); }));
+            _pausePanel = MakePanel("PAUSED", $"WAVE {WaveNumber}     SCORE {Score:N0}\n(the horde doesn't wait online)", buttons.ToArray());
         }
         else
         {

@@ -1,7 +1,8 @@
 using Godot;
 using System;
 
-/// The online session, a child of Main named "Net" (same node path on every peer).
+/// The online session, a child of the root named "Net" (same node path /root/Net on every peer).
+/// It sits beside Main, not under it, so a client stays connected while Main reloads (match -> lobby).
 /// Every message is a byte[] whose first byte is a Msg id, sent through one of three RPCs:
 /// R reliable events, U unreliable player traffic, S unreliable world snapshots.
 public partial class NetGame : Node
@@ -12,10 +13,14 @@ public partial class NetGame : Node
     ENetMultiplayerPeer _peer;
     int _tick;
 
+    public NetGame() { ProcessMode = ProcessModeEnum.Always; }
     public override void _EnterTree() => Net.Game = this;
     public override void _ExitTree() { if (Net.Game == this) Net.Game = null; }
 
-    static Main M => Main.Instance;
+    /// Null for the frame or so while a client's Main reloads.
+    static Main M => GodotObject.IsInstanceValid(Main.Instance) ? Main.Instance : null;
+    /// Usable before this node has entered the tree (it is added deferred).
+    static SceneTree Tree => (SceneTree)Engine.GetMainLoop();
 
     // ------------------------------------------------------------------ auth payloads
     public static byte[] Hello(bool query, string name, int character, string password) =>
@@ -86,7 +91,8 @@ public partial class NetGame : Node
         _peer = null;
         if (_mp != null) _mp.MultiplayerPeer = null;
         _mp = null;
-        if (IsInsideTree()) GetTree().SetMultiplayer(new SceneMultiplayer());
+        Tree.SetMultiplayer(new SceneMultiplayer());
         Net.Mode = NetMode.Offline;
+        ClearLobby();
     }
 }

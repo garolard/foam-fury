@@ -5,6 +5,7 @@ using System.Collections.Generic;
 public partial class NetGame
 {
     public ServerConfig Cfg;
+    /// Peers in the running match (world traffic goes to them only). Everyone connected is in Entries.
     readonly HashSet<int> _joined = new();
     readonly HashSet<int> _ready = new();
     readonly Dictionary<int, (string name, int character)> _pending = new();
@@ -12,7 +13,6 @@ public partial class NetGame
     /// Peer whose hit report is being applied right now (they already showed the hit).
     int _reporter;
 
-    public int JoinedCount => _joined.Count;
     public bool AllReady => _joined.Count > 0 && _ready.IsSupersetOf(_joined);
     public void ClearReady() => _ready.Clear();
 
@@ -21,7 +21,7 @@ public partial class NetGame
         Cfg = cfg;
         Net.Mode = NetMode.Server;
         _mp = new SceneMultiplayer { AuthTimeout = 5 };
-        GetTree().SetMultiplayer(_mp);
+        Tree.SetMultiplayer(_mp);
         _mp.AuthCallback = Callable.From<long, byte[]>(ServerAuth);
         _mp.PeerConnected += id => ServerPeerJoined((int)id);
         _mp.PeerDisconnected += id => ServerPeerLeft((int)id);
@@ -33,13 +33,15 @@ public partial class NetGame
             return false;
         }
         _mp.MultiplayerPeer = _peer;
-        GD.Print($"[server] \"{cfg.Name}\" listening on UDP {cfg.Port} · map {MapBase.Names[cfg.Map]} · max {cfg.MaxPlayers}"
+        HoverMap = cfg.Map;
+        GD.Print($"[server] \"{cfg.Name}\" listening on UDP {cfg.Port} · default stage {MapBase.Names[cfg.Map]} · max {cfg.MaxPlayers}"
             + (cfg.Password != "" ? " · password" : "") + $" · config {ProjectSettings.GlobalizePath(cfg.Path)}");
         return true;
     }
 
-    byte[] InfoBytes() => new NetWriter().B(AuthInfo).S(Cfg.Name).S(Cfg.Motd).I(Cfg.Map).I(M.Players.Count).I(Cfg.MaxPlayers)
-        .Bool(Cfg.Password != "").I(M.WaveNumber).I(Net.Protocol).Bytes();
+    /// Map is -1 while the server sits in the lobby.
+    byte[] InfoBytes() => new NetWriter().B(AuthInfo).S(Cfg.Name).S(Cfg.Motd).I(_matchRunning ? M.MapIndex : -1).I(Entries.Count).I(Cfg.MaxPlayers)
+        .Bool(Cfg.Password != "").I(_matchRunning ? M.WaveNumber : 0).I(Net.Protocol).Bytes();
 
     void ServerAuth(long lid, byte[] data)
     {
@@ -55,13 +57,13 @@ public partial class NetGame
 
         string err = proto != Net.Protocol ? $"VERSION MISMATCH (SERVER v{Net.Protocol}, YOU v{proto})"
             : Cfg.Password != "" && pw != Cfg.Password ? "WRONG PASSWORD"
-            : M.Players.Count + _pending.Count >= Cfg.MaxPlayers ? "SERVER IS FULL"
+            : Entries.Count + _pending.Count >= Cfg.MaxPlayers ? "SERVER IS FULL"
             : null;
         if (err != null)
         {
             GD.Print($"[server] refused peer {id}: {err}");
             _mp.SendAuth(id, new NetWriter().B(AuthReject).S(err).Bytes());
-            GetTree().CreateTimer(0.5).Timeout += () =>
+            Tree.CreateTimer(0.5).Timeout += () =>
             {
                 // usually the client has hung up by now
                 if (_peer != null && System.Array.IndexOf(_mp.GetAuthenticatingPeers(), id) >= 0) _peer.DisconnectPeer(id);
@@ -71,53 +73,38 @@ public partial class NetGame
         if (name.Length == 0) name = "SURVIVOR";
         if (name.Length > 16) name = name.Substring(0, 16);
         _pending[id] = (name.ToUpper(), Mathf.Clamp(character, 0, GameData.Characters.Length - 1));
-        _mp.SendAuth(id, new NetWriter().B(AuthAccept).I(Cfg.Map).Bytes());
+        _mp.SendAuth(id, new NetWriter().B(AuthAccept).B((int)ServerPhase).I(_matchRunning ? M.MapIndex : HoverMap).Bytes());
         _mp.CompleteAuth(id);
     }
 
+    /// In the lobby first: a Player only exists once they're in a match (ServerStartMatch / ServerLateJoin).
     void ServerPeerJoined(int id)
     {
         if (!_pending.Remove(id, out var info)) { _peer.DisconnectPeer(id); return; }
         _peer.GetPeer(id)?.SetTimeout(32, 3000, 8000); // drop crashed clients quickly
-        var main = M;
-        var p = new Player();
-        p.SetupRemote(info.character, id, info.name);
-        main.World.AddChild(p);
-        main.Players.Add(p);
-        bool waiting = main.Mode == Main.State.Waiting;
-        // between waves you drop straight in; mid-wave you watch until it's cleared
-        bool spawnNow = waiting || (main.Mode == Main.State.Playing && !main.WaveActive);
-        p.SetBenched(!spawnNow);
-        p.GlobalPosition = spawnNow && !waiting ? main.BuddySpot(p) : main.StartLine(main.Players.Count - 1, main.Players.Count);
-        GD.Print($"[server] {info.name} joined as {p.Def.Name} (peer {id}) · {main.Players.Count}/{Cfg.MaxPlayers}" + (spawnNow ? "" : " · spectating"));
-
-        Broadcast(PlayerFull(new NetWriter(Msg.PlayerJoined), p));
-        SendRaw(id, Welcome().Bytes(), 0);
-        _joined.Add(id);
-        if (waiting) main.ServerBeginRun();
-        else main.Toast($"{info.name} JOINED", new Color(0.5f, 0.9f, 1f));
+        Entries.Add(new LobbyEntry { Id = id, Name = info.name, Character = info.character });
+        GD.Print($"[server] {info.name} connected (peer {id}) · {Entries.Count}/{Cfg.MaxPlayers}" + (_matchRunning ? " · match running" : ""));
+        if (_matchRunning) M.Toast($"{info.name} IS IN THE LOBBY", new Color(0.5f, 0.9f, 1f));
+        BroadcastLobby();
     }
 
     void ServerPeerLeft(int id)
     {
         _pending.Remove(id);
-        _joined.Remove(id);
-        _ready.Remove(id);
-        _hitRate.Remove(id);
+        var e = Entry(id);
+        if (e == null) return;
+        Entries.Remove(e);
         var main = M;
-        var p = main.PlayerById(id);
-        if (p == null) return;
-        GD.Print($"[server] {p.NetName} left (peer {id}) · {main.Players.Count - 1}/{Cfg.MaxPlayers}");
-        p.Dead = true; // zombies drop them as a target right away
-        main.Players.Remove(p);
-        p.QueueFree();
-        Broadcast(new NetWriter(Msg.PlayerLeft).I(id));
-        if (main.Players.Count == 0) { main.ServerResetRun(false); main.Mode = Main.State.Waiting; GD.Print("[server] empty, waiting for players"); }
-        else
+        bool inMatch = main.PlayerById(id) != null;
+        ServerRemovePlayer(id);
+        GD.Print($"[server] {e.Name} left (peer {id}) · {Entries.Count}/{Cfg.MaxPlayers}");
+        if (_matchRunning && main.Players.Count == 0) { ServerReturnToLobby(); return; }
+        if (inMatch)
         {
-            main.Toast($"{p.NetName} LEFT", new Color(0.8f, 0.7f, 0.75f));
+            main.Toast($"{e.Name} LEFT", new Color(0.8f, 0.7f, 0.75f));
             if (main.Mode == Main.State.Playing && !main.AnyStanding) main.EndRun();
         }
+        BroadcastLobby();
     }
 
     void ServerTick()
@@ -129,6 +116,7 @@ public partial class NetGame
     // ------------------------------------------------------------------ incoming
     void ServerMsg(int from, Msg m, NetReader r)
     {
+        if (IsLobbyMsg(m)) { ServerLobbyMsg(from, m, r); return; }
         if (!_joined.Contains(from)) return;
         var main = M;
         var p = main.PlayerById(from);

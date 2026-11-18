@@ -5,7 +5,7 @@ using System.Collections.Generic;
 /// Client half: connecting, streaming our player to the server, applying the server's world.
 public partial class NetGame
 {
-    /// Joined: the map to load. Raised before the handshake completes so the world exists when Welcome lands.
+    /// Let in (to the lobby): the server's LobbyPhase. The Lobby message follows once the handshake completes.
     public event Action<int> Accepted;
     /// Couldn't connect / refused / timed out (reason).
     public event Action<string> Failed;
@@ -23,8 +23,9 @@ public partial class NetGame
         var ip = Net.Resolve(host);
         if (string.IsNullOrEmpty(ip)) { Fail($"CAN'T FIND {host.ToUpper()}"); return; }
         _rejectReason = null;
+        ClearLobby();
         _mp = new SceneMultiplayer { AuthTimeout = 8 };
-        GetTree().SetMultiplayer(_mp);
+        Tree.SetMultiplayer(_mp);
         _mp.AuthCallback = Callable.From<long, byte[]>(ClientAuth);
         _mp.PeerAuthenticating += id => _mp?.SendAuth((int)id, Hello(false, name, character, password));
         _mp.PeerAuthenticationFailed += _ => Fail(_rejectReason ?? "CONNECTION REFUSED");
@@ -66,12 +67,14 @@ public partial class NetGame
         {
             case AuthAccept:
             {
-                int map = r.I();
+                int phase = r.B(), map = r.I();
                 _connecting = false;
                 Net.Mode = NetMode.Client;
                 MyId = _mp.GetUniqueId();
-                GD.Print($"[net] joined as peer {MyId}, map {map}");
-                Accepted?.Invoke(map);
+                Phase = (LobbyPhase)phase;
+                HoverMap = map;
+                GD.Print($"[net] joined as peer {MyId} · {Phase}");
+                Accepted?.Invoke(phase);
                 _mp.CompleteAuth((int)id);
                 break;
             }
@@ -87,14 +90,14 @@ public partial class NetGame
         if (!Net.IsClient) return;
         GD.Print("[net] lost connection to the server");
         GameData.NetMessage = "LOST CONNECTION TO THE SERVER";
-        Callable.From(() => M.LeaveServer()).CallDeferred();
+        Callable.From(() => M?.LeaveServer()).CallDeferred();
     }
 
     void ClientTick()
     {
         // 30 Hz own-player state
         if (!_live || _tick % 2 != 0) return;
-        var p = M.LocalPlayer;
+        var p = M?.LocalPlayer;
         if (p == null) return;
         SendRaw(1, new NetWriter(Msg.State).V(p.GlobalPosition).V(p.Velocity).Yaw(p.FacingYaw).V(p.AimPoint).B(p.NetFlags).B(p.WeaponIndex).Bytes(), 1);
     }
@@ -156,6 +159,16 @@ public partial class NetGame
         var main = M;
         switch (m)
         {
+            // lobby traffic works with no world (and while Main reloads)
+            case Msg.Lobby: ClientLobbyMsg(r); return;
+            case Msg.LobbyHover: HoverMap = r.B(); HoverChanged?.Invoke(HoverMap); return;
+            case Msg.Enter: main?.ClientEnterMatch(r.B()); return;
+            case Msg.ToLobby: main?.ClientToLobby(); return;
+        }
+        // world traffic only means something once we're in the match
+        if (main == null || main.Mode == Main.State.Menu) return;
+        switch (m)
+        {
             case Msg.Welcome:
             {
                 ReadGameState(r);
@@ -167,7 +180,7 @@ public partial class NetGame
                 for (int i = 0; i < npk; i++) Pickup.SpawnReplica(r.I(), (PickupKind)r.B(), r.V(), r.V());
                 int npd = r.I();
                 for (int i = 0; i < npd; i++) MudPuddle.SpawnReplica(r.I(), r.V(), r.F(), r.Bool());
-                if (main.LocalPlayer is { Benched: true }) main.Banner("SPECTATING", "you'll join the fight when this wave is cleared", 4f);
+                if (main.LocalPlayer is { Benched: true }) main.Banner("SPECTATING", "you'll join the fight when this wave is cleared  ·  START to change survivor", 4f);
                 break;
             }
             case Msg.Snapshot:

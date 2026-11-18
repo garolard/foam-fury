@@ -1,7 +1,9 @@
 # Running a Foam Fury server
 
 A server is the game itself running headless. It owns the zombies, waves, loot, HP and score; players connect with the
-normal game (**ONLINE → pick survivor → add your server's address**). One server process = one room (one map, up to 4 players).
+normal game (**ONLINE → add your server's address → join**). One server process = one room (up to 4 players).
+Nothing runs until players are in: everyone picks and confirms a survivor in the lobby, and once 2+ players are in and
+all have confirmed, the host (the first player to connect) picks the stage and the match starts.
 
 ## Quick start (no export, from the project folder)
 
@@ -54,7 +56,7 @@ docker logs -f foam-fury
 
 | Where | What |
 |---|---|
-| `server.cfg` `[server]` | `name`, `motd`, `port`, `max_players` (1-4), `password`, `map` (0-3), `restart_delay` |
+| `server.cfg` `[server]` | `name`, `motd`, `port`, `max_players` (1-4), `password`, `map` (0-3, the stage select's starting stage), `restart_delay` |
 | `--config=path` | config file (default: `server.cfg` next to the binary, else `user://server.cfg`, created on first run) |
 | `--port=N`, `--map=N` | override the config |
 
@@ -63,8 +65,12 @@ for the default port, or a URL such as `ff://your.host:7777`).
 
 ## What players see
 
-- Joining mid-wave: spectate until the wave is cleared, then drop in next to a teammate.
-- Game over: results, then a new run after `restart_delay` seconds (or once everyone presses READY).
+- Lobby: 4 slots in connection order (P1 is the host). Pick with ◀ ▶, confirm with (A). The match needs 2+ players.
+- Joining while a match runs: pick a survivor in the lobby, then spectate until the wave is cleared and drop in next to
+  a teammate. While spectating, pause → CHANGE SURVIVOR goes back to the lobby.
+- Game over: results, then everyone goes back to the lobby after `restart_delay` seconds (or once everyone presses
+  READY). Picks are kept but need confirming again, and the host picks the next stage.
+- If the host leaves, the next player in line becomes host.
 - Wrong password / full server / different game version: refused with the reason in the server browser.
 
 ## Logs

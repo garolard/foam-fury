@@ -19,9 +19,9 @@ port=7777
 max_players=4
 ; empty = no password
 password=""""
-; 0 Dusk Coliseum, 1 Neon Arcade, 2 Night Crypt, 3 Pine Camp
+; stage the host's stage select starts on: 0 Dusk Coliseum, 1 Neon Arcade, 2 Night Crypt, 3 Pine Camp
 map=0
-; seconds between game over and the next run
+; seconds on the results screen before everyone goes back to the lobby
 restart_delay=10
 ";
 

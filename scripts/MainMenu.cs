@@ -96,6 +96,7 @@ public partial class StatBar : Control
 }
 
 /// Front end: title -> survivor select (or co-op lobby) -> stage select.
+/// Online: title -> server list -> shared lobby -> stage select (the host picks).
 public partial class MainMenu : CanvasLayer
 {
     public enum Screen { Title, Survivor, Stage, Lobby, Servers }
@@ -134,18 +135,24 @@ public partial class MainMenu : CanvasLayer
     // stage card
     Label _sIndex, _sName, _sSub, _sBest, _sGates, _sRise;
 
-    // co-op lobby: who joined (by device) and which survivor they picked
-    class Joined { public int Device, Character; }
+    // co-op lobby: who joined (by device), which survivor they picked, and whether they locked it in
+    class Joined { public int Device, Character; public bool Confirmed; }
     const int KeyboardDevice = -100;
     static readonly Color[] TeamColors = { new(1f, 0.8f, 0.3f), new(0.35f, 0.85f, 1f), new(1f, 0.45f, 0.7f), new(0.55f, 1f, 0.45f) };
     readonly List<Joined> _team = new();
     readonly Dictionary<int, float> _stickX = new();
     bool _coop;
+    /// Local co-op: everyone confirmed, moving on to stage select when this runs out.
+    float _readyT;
     Control _lobbyUi;
-    Label _lobbyMsg;
+    Label _lobbyMsg, _lobbyStatus;
     readonly PanelContainer[] _cardPanel = new PanelContainer[4];
     readonly Label[] _cardDevice = new Label[4], _cardName = new Label[4], _cardTitle = new Label[4], _cardPerk = new Label[4],
-        _cardWeapon = new Label[4], _cardJoin = new Label[4];
+        _cardWeapon = new Label[4], _cardJoin = new Label[4], _cardBadge = new Label[4];
+
+    /// Connected to a server: the lobby / stage screens are the shared online ones.
+    bool NetLobby => _online && Net.IsClient && Net.Game != null;
+    bool _netHooked, _autoConfirmed, _autoChose;
 
     public MainMenu() { Layer = 10; }
 
@@ -179,15 +186,39 @@ public partial class MainMenu : CanvasLayer
         BuildLobby();
         BuildServers();
         if (start == Screen.Servers) _online = true;
+        _chars.Select(GameData.SelectedCharacter);
+        _maps.Select(GameData.SelectedMap);
+        if (Net.IsClient) { EnterOnlineLobby(true); return; }
         if (start == Screen.Lobby || (start != Screen.Title && GameData.Coop))
         {
             _coop = true;
             foreach (var sl in GameData.Slots)
                 _team.Add(new Joined { Device = sl.Kbm ? KeyboardDevice : sl.Pad, Character = sl.Character });
         }
-        _chars.Select(GameData.SelectedCharacter);
-        _maps.Select(GameData.SelectedMap);
         Go(start, true);
+    }
+
+    /// Connected: show the shared lobby (and follow the server from here on).
+    public void EnterOnlineLobby(bool instant = false)
+    {
+        _online = true;
+        _coop = false;
+        _joining = false;
+        if (!_netHooked)
+        {
+            _netHooked = true;
+            Net.Game.LobbyChanged += OnNetLobby;
+            Net.Game.HoverChanged += OnNetHover;
+        }
+        Go(Screen.Lobby, instant);
+        OnNetLobby();
+    }
+
+    public override void _ExitTree()
+    {
+        if (!_netHooked || Net.Game == null) return;
+        Net.Game.LobbyChanged -= OnNetLobby;
+        Net.Game.HoverChanged -= OnNetHover;
     }
 
     // ------------------------------------------------------------------ 3D showcase
@@ -382,7 +413,7 @@ public partial class MainMenu : CanvasLayer
             _coop = false;
             _online = true;
             GameData.Slots.Clear();
-            Go(Screen.Survivor);
+            Go(Screen.Servers);
         };
         _multi.Pressed += () =>
         {
@@ -434,6 +465,8 @@ public partial class MainMenu : CanvasLayer
             _cardPerk[i].AutowrapMode = TextServer.AutowrapMode.WordSmart;
             _cardWeapon[i] = Add(box, Hud.MakeLabel("", 20, Soft, 5));
             _cardWeapon[i].AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            Add(box, new Control { SizeFlagsVertical = Control.SizeFlags.ExpandFill });
+            _cardBadge[i] = Add(box, Hud.MakeLabel("", 34, TeamColors[i], 9, HorizontalAlignment.Center));
             _cardJoin[i] = Add(box, Hud.MakeLabel("PRESS  (A)\nOR  ENTER\nTO JOIN", 30, Soft, 7, HorizontalAlignment.Center));
             _cardJoin[i].SizeFlagsVertical = Control.SizeFlags.ExpandFill;
             _cardJoin[i].VerticalAlignment = VerticalAlignment.Center;
@@ -442,26 +475,71 @@ public partial class MainMenu : CanvasLayer
         _lobbyMsg.AnchorLeft = 0; _lobbyMsg.AnchorRight = 1; _lobbyMsg.AnchorTop = 0.83f; _lobbyMsg.AnchorBottom = 0.83f;
         _lobbyMsg.Modulate = new Color(1, 1, 1, 0);
         _lobbyUi.AddChild(_lobbyMsg);
+        _lobbyStatus = Hud.MakeLabel("", 26, Soft, 7, HorizontalAlignment.Center);
+        _lobbyStatus.AnchorLeft = 0; _lobbyStatus.AnchorRight = 1; _lobbyStatus.AnchorTop = 0.115f; _lobbyStatus.AnchorBottom = 0.115f;
+        _lobbyUi.AddChild(_lobbyStatus);
         _lobbyUi.Visible = false;
     }
 
     void RefreshLobby()
     {
+        if (NetLobby) { RefreshNetLobby(); return; }
         for (int i = 0; i < 4; i++)
         {
             bool on = i < _team.Count;
-            _cardPanel[i].Modulate = on ? Colors.White : new Color(1, 1, 1, 0.55f);
-            _cardJoin[i].Visible = !on;
-            foreach (var l in new[] { _cardName[i], _cardTitle[i], _cardPerk[i], _cardWeapon[i] }) l.Visible = on;
-            if (!on) { _cardDevice[i].Text = ""; continue; }
+            if (!on) { CardEmpty(i, "PRESS  (A)\nOR  ENTER\nTO JOIN"); continue; }
             var t = _team[i];
-            var c = GameData.Characters[t.Character];
-            _cardDevice[i].Text = t.Device == KeyboardDevice ? "KEYBOARD + MOUSE" : $"CONTROLLER {t.Device + 1}";
-            _cardName[i].Text = $"◀ {c.Name} ▶";
-            _cardTitle[i].Text = c.Title.ToUpper();
-            _cardPerk[i].Text = "★  " + c.Perk.ToUpper();
-            _cardWeapon[i].Text = c.Signature != null ? $"SIGNATURE: {c.Signature.Name.ToUpper()}" : "";
+            CardFill(i, t.Device == KeyboardDevice ? "KEYBOARD + MOUSE" : $"CONTROLLER {t.Device + 1}", t.Character, !t.Confirmed,
+                t.Confirmed ? "READY!" : "(A)  CONFIRM", t.Confirmed);
         }
+        int waiting = _team.FindAll(t => !t.Confirmed).Count;
+        _lobbyStatus.Text = _team.Count < 2 ? "CO-OP NEEDS AT LEAST 2 PLAYERS"
+            : waiting > 0 ? $"WAITING FOR {waiting} TO CONFIRM" : "ALL READY!";
+    }
+
+    void RefreshNetLobby()
+    {
+        var net = Net.Game;
+        var es = net.Entries;
+        for (int i = 0; i < 4; i++)
+        {
+            if (i >= es.Count) { CardEmpty(i, "WAITING\nFOR\nPLAYERS…"); continue; }
+            var e = es[i];
+            bool me = e.Id == net.MyId;
+            string who = e.Name + (i == 0 ? "  ·  HOST" : "") + (me ? "  ·  YOU" : "");
+            CardFill(i, who, e.Character, me && !e.Confirmed && !e.InMatch,
+                e.InMatch ? "IN MATCH" : e.Confirmed ? "READY!" : me ? "(A)  CONFIRM" : "PICKING…", e.Confirmed || e.InMatch);
+        }
+        var mine = net.Me;
+        int waiting = es.FindAll(e => !e.Confirmed && !e.InMatch).Count;
+        _lobbyStatus.Text = mine == null ? "JOINING…"
+            : net.Phase == LobbyPhase.Playing && !mine.InMatch ? (mine.Confirmed ? "JOINING THE MATCH…" : "MATCH IN PROGRESS  —  CONFIRM TO SPECTATE AND JOIN")
+            : es.Count < 2 ? "NEED AT LEAST 2 PLAYERS"
+            : waiting > 0 ? $"WAITING FOR {waiting} TO CONFIRM" : "ALL READY!";
+    }
+
+    void CardEmpty(int i, string join)
+    {
+        _cardPanel[i].Modulate = new Color(1, 1, 1, 0.55f);
+        _cardJoin[i].Visible = true;
+        _cardJoin[i].Text = join;
+        foreach (var l in new[] { _cardName[i], _cardTitle[i], _cardPerk[i], _cardWeapon[i], _cardBadge[i] }) l.Visible = false;
+        _cardDevice[i].Text = "";
+    }
+
+    void CardFill(int i, string who, int character, bool arrows, string badge, bool locked)
+    {
+        _cardPanel[i].Modulate = Colors.White;
+        _cardJoin[i].Visible = false;
+        foreach (var l in new[] { _cardName[i], _cardTitle[i], _cardPerk[i], _cardWeapon[i], _cardBadge[i] }) l.Visible = true;
+        var c = GameData.Characters[character];
+        _cardDevice[i].Text = who;
+        _cardName[i].Text = arrows ? $"◀ {c.Name} ▶" : c.Name;
+        _cardTitle[i].Text = c.Title.ToUpper();
+        _cardPerk[i].Text = "★  " + c.Perk.ToUpper();
+        _cardWeapon[i].Text = c.Signature != null ? $"SIGNATURE: {c.Signature.Name.ToUpper()}" : "";
+        _cardBadge[i].Text = badge;
+        _cardBadge[i].LabelSettings.FontColor = locked ? TeamColors[i] : Dim;
     }
 
     void LobbyMessage(string text)
@@ -475,25 +553,42 @@ public partial class MainMenu : CanvasLayer
 
     enum LobbyCmd { Accept, Back, Left, Right, Start }
 
-    /// Lobby input is per device (global actions can't tell who pressed what).
+    /// Lobby input is per device (global actions can't tell who pressed what). So is co-op / online stage select.
     public override void _Input(InputEvent e)
     {
         if (!Decode(e, out int dev, out var cmd)) return;
-        if (_screen != Screen.Lobby || _done || _cool > 0) return;
-        GetViewport().SetInputAsHandled();
+        if (_done || _cool > 0) return;
+        if (_screen == Screen.Lobby)
+        {
+            GetViewport().SetInputAsHandled();
+            if (NetLobby) NetLobbyInput(cmd); else LocalLobbyInput(dev, cmd);
+        }
+        else if (_screen == Screen.Stage && (_coop || NetLobby))
+        {
+            GetViewport().SetInputAsHandled();
+            SharedStageInput(dev, cmd);
+        }
+    }
+
+    void LocalLobbyInput(int dev, LobbyCmd cmd)
+    {
         int idx = _team.FindIndex(t => t.Device == dev);
+        var t = idx >= 0 ? _team[idx] : null;
         switch (cmd)
         {
-            case LobbyCmd.Accept when idx < 0:
-            case LobbyCmd.Start when idx < 0:
+            case LobbyCmd.Accept or LobbyCmd.Start when t == null:
                 Join(dev);
                 break;
-            case LobbyCmd.Accept when idx == 0:
-            case LobbyCmd.Start:
-                TryStart();
+            case LobbyCmd.Accept or LobbyCmd.Start when !t.Confirmed:
+                t.Confirmed = true;
+                Sfx.Play("ui_select");
+                RefreshLobby();
+                Pop(_cardPanel[idx]);
+                if (_team.Count < 2) LobbyMessage("CO-OP NEEDS AT LEAST 2 PLAYERS");
                 break;
-            case LobbyCmd.Back when idx >= 0:
-                _team.RemoveAt(idx);
+            case LobbyCmd.Back when t != null:
+                if (t.Confirmed) t.Confirmed = false;
+                else _team.RemoveAt(idx);
                 Sfx.Play("ui_move");
                 RefreshLobby();
                 break;
@@ -501,11 +596,9 @@ public partial class MainMenu : CanvasLayer
                 Sfx.Play("ui_move");
                 Go(Screen.Title);
                 break;
-            case LobbyCmd.Left when idx >= 0:
-            case LobbyCmd.Right when idx >= 0:
+            case LobbyCmd.Left or LobbyCmd.Right when t != null && !t.Confirmed:
             {
                 int n = GameData.Characters.Length;
-                var t = _team[idx];
                 t.Character = (t.Character + (cmd == LobbyCmd.Left ? -1 : 1) + n) % n;
                 Sfx.Play("ui_move");
                 RefreshLobby();
@@ -513,6 +606,127 @@ public partial class MainMenu : CanvasLayer
                 break;
             }
         }
+        // 2+ players, all locked in: on to the stage after a beat (cancelled if anyone backs out)
+        bool all = _team.Count >= 2 && _team.TrueForAll(j => j.Confirmed);
+        if (!all) _readyT = 0;
+        else if (_readyT <= 0) { _readyT = 0.6f; LobbyMessage("ALL READY!"); }
+    }
+
+    /// Online: any local device drives our own card; the server decides when everyone moves on.
+    void NetLobbyInput(LobbyCmd cmd)
+    {
+        var net = Net.Game;
+        var me = net.Me;
+        if (cmd == LobbyCmd.Back && (me == null || (!me.Confirmed && !me.InMatch)))
+        {
+            Sfx.Play("ui_move");
+            GameData.NetMessage = null;
+            _done = true;
+            Main.Instance?.LeaveServer();
+            return;
+        }
+        if (me == null || me.InMatch) return;
+        int idx = net.Entries.IndexOf(me);
+        switch (cmd)
+        {
+            case LobbyCmd.Accept or LobbyCmd.Start when !me.Confirmed:
+                net.SendLobbyConfirm(true);
+                Sfx.Play("ui_select");
+                RefreshLobby();
+                Pop(_cardPanel[idx]);
+                break;
+            case LobbyCmd.Back:
+                net.SendLobbyConfirm(false);
+                Sfx.Play("ui_move");
+                RefreshLobby();
+                break;
+            case LobbyCmd.Left or LobbyCmd.Right when !me.Confirmed:
+            {
+                int n = GameData.Characters.Length;
+                int c = (me.Character + (cmd == LobbyCmd.Left ? -1 : 1) + n) % n;
+                net.SendLobbyPick(c);
+                GameData.SelectedCharacter = c;
+                Sfx.Play("ui_move");
+                RefreshLobby();
+                Pop(_cardName[idx]);
+                break;
+            }
+        }
+    }
+
+    /// Co-op: only P1 picks the stage. Online: only the host; everyone else watches the carousel follow.
+    void SharedStageInput(int dev, LobbyCmd cmd)
+    {
+        bool online = NetLobby;
+        if (online && !Net.Game.IsHost)
+        {
+            if (cmd == LobbyCmd.Back) { Sfx.Play("ui_move"); Net.Game.SendLobbyConfirm(false); }
+            return;
+        }
+        if (!online && (_team.Count == 0 || dev != _team[0].Device)) return;
+        switch (cmd)
+        {
+            case LobbyCmd.Left or LobbyCmd.Right:
+            {
+                int d = cmd == LobbyCmd.Left ? -1 : 1;
+                MoveStage(d);
+                if (online) Net.Game.SendLobbyHover(_maps.Index);
+                break;
+            }
+            case LobbyCmd.Accept or LobbyCmd.Start:
+                Sfx.Play("ui_select");
+                if (online) Net.Game.SendChooseMap(_maps.Index);
+                else { _done = true; Finished?.Invoke(_team[0].Character, _maps.Index); }
+                break;
+            case LobbyCmd.Back:
+                Sfx.Play("ui_move");
+                // the server drops everyone back to the lobby once the host unconfirms
+                if (online) Net.Game.SendLobbyConfirm(false);
+                else { _team[0].Confirmed = false; Go(Screen.Lobby); }
+                break;
+        }
+    }
+
+    void MoveStage(int d)
+    {
+        if (d == 0) return;
+        _maps.Move(d);
+        Sfx.Play("ui_move");
+        Pulse(d < 0 ? _arrowL : _arrowR);
+        Refresh(d);
+        _settle = 0.45f;
+    }
+
+    void OnNetLobby()
+    {
+        if (_done || Net.Game == null) return;
+        var net = Net.Game;
+        if (net.Phase == LobbyPhase.MapSelect && _screen == Screen.Lobby)
+        {
+            _maps.Select(net.HoverMap);
+            Go(Screen.Stage);
+        }
+        else if (net.Phase != LobbyPhase.MapSelect && _screen == Screen.Stage) Go(Screen.Lobby);
+        else if (_screen == Screen.Lobby) RefreshLobby();
+        else if (_screen == Screen.Stage) _footer.Text = FooterText(Screen.Stage);
+
+        // FF_READY=1 (tests): confirm right away; with FF_MAP the host then starts on that stage
+        if (OS.GetEnvironment("FF_READY") != "1") return;
+        if (!_autoConfirmed && net.Me is { Confirmed: false, InMatch: false }) { _autoConfirmed = true; net.SendLobbyConfirm(true); }
+        if (!_autoChose && _screen == Screen.Stage && net.IsHost && OS.GetEnvironment("FF_MAP") is { Length: > 0 } fm && int.TryParse(fm, out int map))
+        {
+            _autoChose = true;
+            net.SendChooseMap(map);
+        }
+    }
+
+    /// Not the host: the stage carousel follows theirs.
+    void OnNetHover(int map)
+    {
+        if (_done || _screen != Screen.Stage || Net.Game.IsHost || _maps.Count == 0) return;
+        int n = _maps.Count, d = ((map - _maps.Index) % n + n) % n;
+        if (d > n / 2) d -= n;
+        MoveStage(d);
     }
 
     bool Decode(InputEvent e, out int dev, out LobbyCmd cmd)
@@ -568,17 +782,15 @@ public partial class MainMenu : CanvasLayer
         Pop(_cardPanel[_team.Count - 1]);
     }
 
-    void TryStart()
+    /// Local co-op: hand the confirmed team to the run.
+    void FillSlots()
     {
-        if (_team.Count < 2) { Sfx.Play("empty"); LobbyMessage("CO-OP NEEDS AT LEAST 2 PLAYERS"); return; }
         GameData.Slots.Clear();
         foreach (var t in _team)
         {
             bool kb = t.Device == KeyboardDevice;
             GameData.Slots.Add(new PlayerSlot(kb ? InputSetup.NoPad : t.Device, kb, t.Character));
         }
-        Sfx.Play("ui_select");
-        Go(Screen.Stage);
     }
 
     static void Pop(Control c)
@@ -787,19 +999,30 @@ public partial class MainMenu : CanvasLayer
         _stageInfo.Visible = s == Screen.Stage;
         _lobbyUi.Visible = lobby;
         _arrowL.Visible = _arrowR.Visible = !flat;
-        _crumbs[0].Text = _coop ? "LOCAL CO-OP" : _online ? "ONLINE" : "SINGLE PLAYER";
-        _crumbs[1].Text = _coop ? "TEAM" : "SURVIVOR";
-        _crumbs[2].Text = _online ? "SERVER" : "STAGE";
-        int step = lobby ? 1 : servers ? 2 : (int)s;
+        _readyT = 0;
+        _crumbs[0].Text = _coop ? "LOCAL CO-OP" : _online ? "ONLINE SERVER" : "SINGLE PLAYER";
+        _crumbs[1].Text = _coop || _online ? "TEAM" : "SURVIVOR";
+        _crumbs[2].Text = "STAGE";
+        int step = servers ? 0 : lobby ? 1 : (int)s;
         for (int i = 0; i < 3; i++) _crumbs[i].LabelSettings.FontColor = i == step ? Gold : i < step ? Soft : Dim;
-        _footer.Text = s == Screen.Stage ? "◀ ▶  CHOOSE STAGE        (A)  FIGHT!        (B)  BACK"
-                     : lobby ? "(A) / ENTER  JOIN        ◀ ▶  SURVIVOR        (B) / ESC  LEAVE        START  READY"
-                     : servers ? "PICK A SERVER TO JOIN        (B) / ESC  BACK"
-                     : "◀ ▶  CHOOSE SURVIVOR        (A)  SELECT        (B)  BACK";
+        _footer.Text = FooterText(s);
         if (title) _single.CallDeferred(Control.MethodName.GrabFocus);
         else if (lobby) { GetViewport().GuiReleaseFocus(); RefreshLobby(); }
         else if (servers) OpenServers();
         else { GetViewport().GuiReleaseFocus(); FrameCamera(s, instant); Refresh(0); }
+    }
+
+    string FooterText(Screen s)
+    {
+        bool lobby = s == Screen.Lobby;
+        if (s == Screen.Stage && NetLobby && !Net.Game.IsHost)
+            return $"{(Net.Game.Entries.Count > 0 ? Net.Game.Entries[0].Name : "THE HOST")} IS CHOOSING THE STAGE        (B)  BACK";
+        if (s == Screen.Stage)
+            return (_coop ? "P1:  " : "") + "◀ ▶  CHOOSE STAGE        (A)  FIGHT!        (B)  BACK";
+        if (lobby && NetLobby) return "◀ ▶  SURVIVOR        (A)  CONFIRM        (B)  UNCONFIRM / LEAVE SERVER";
+        if (lobby) return "(A) / ENTER  JOIN · CONFIRM        ◀ ▶  SURVIVOR        (B) / ESC  BACK";
+        if (s == Screen.Servers) return "PICK A SERVER TO JOIN        (B) / ESC  BACK";
+        return "◀ ▶  CHOOSE SURVIVOR        (A)  SELECT        (B)  BACK";
     }
 
     static void Fade(CanvasItem c, bool on, bool instant)
@@ -829,8 +1052,15 @@ public partial class MainMenu : CanvasLayer
             _backdrop = _maps.Index;
             BackdropChanged?.Invoke(_backdrop);
         }
+        if (_readyT > 0 && (_readyT -= dt) <= 0 && _screen == Screen.Lobby && !_done)
+        {
+            FillSlots();
+            Sfx.Play("ui_select");
+            Go(Screen.Stage);
+        }
         if (_screen == Screen.Servers && !_done && _cool <= 0 && Input.IsActionJustPressed("menu_back")) { ServersBack(); return; }
         if (_done || _cool > 0 || _screen == Screen.Title || _screen == Screen.Lobby || _screen == Screen.Servers) return;
+        if (_screen == Screen.Stage && (_coop || NetLobby)) return; // per-device, see _Input
 
         var car = _screen == Screen.Survivor ? _chars : _maps;
         int d = Input.IsActionJustPressed("menu_left") ? -1 : Input.IsActionJustPressed("menu_right") ? 1 : 0;
@@ -845,13 +1075,13 @@ public partial class MainMenu : CanvasLayer
         else if (Input.IsActionJustPressed("menu_accept") || Input.IsActionJustPressed("fire"))
         {
             Sfx.Play("ui_select");
-            if (_screen == Screen.Survivor) Go(_online ? Screen.Servers : Screen.Stage);
-            else { _done = true; Finished?.Invoke(_coop && _team.Count > 0 ? _team[0].Character : _chars.Index, _maps.Index); }
+            if (_screen == Screen.Survivor) Go(Screen.Stage);
+            else { _done = true; Finished?.Invoke(_chars.Index, _maps.Index); }
         }
         else if (Input.IsActionJustPressed("menu_back"))
         {
             Sfx.Play("ui_move");
-            Go(_screen == Screen.Stage ? (_coop ? Screen.Lobby : Screen.Survivor) : Screen.Title);
+            Go(_screen == Screen.Stage ? Screen.Survivor : Screen.Title);
         }
     }
 }

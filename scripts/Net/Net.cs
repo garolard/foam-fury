@@ -7,14 +7,14 @@ public enum NetMode { Offline, Server, Client }
 /// Online session role and shared helpers. Offline (solo / local co-op) never touches any of this.
 public static class Net
 {
-    public const int Protocol = 1, DefaultPort = 7777, Channels = 3;
+    public const int Protocol = 2, DefaultPort = 7777, Channels = 3;
 
     public static NetMode Mode = NetMode.Offline;
     public static bool IsServer => Mode == NetMode.Server;
     public static bool IsClient => Mode == NetMode.Client;
     public static bool Online => Mode != NetMode.Offline;
     public static bool Headless => DisplayServer.GetName() == "headless";
-    /// The session node (/root/Main/Net); null outside a running Main.
+    /// The session node (/root/Net, a sibling of Main so it survives scene reloads).
     public static NetGame Game;
 
     /// Start as a dedicated server? (dedicated export, `-- --server`, or FF_NET=server)
@@ -74,10 +74,12 @@ public enum Msg : byte
 {
     // client -> server
     State = 1, Fired, Hit, Slow, MudLanded, Grenade, TakePickup, Ready,
+    LobbyPick, LobbyConfirm, LobbyHover, LobbyChooseMap, BackToLobby,
     // server -> client
     Welcome = 20, Snapshot, PlayerJoined, PlayerLeft, PlayerSpawned, PlayerHurt, PlayerDowned, PlayerDied, PlayerRevived,
     ZombieSpawned, ZombieHit, ZombieDied, PickupSpawned, PickupTaken, PickupGone, GrenadeSpawned, GrenadeExploded,
     PuddleSpawned, PuddleGrew, PuddleIgnited, PuddleRemoved, Banner, Toast, Score, Sound, RunStart, RunOver, FiredRelay,
+    Lobby, Enter, ToLobby,
 }
 
 /// Packs a message into bytes.

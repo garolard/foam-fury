@@ -11,7 +11,7 @@ public partial class MainMenu
     Control _serversUi, _editBox, _pwBox;
     VBoxContainer _srvList;
     LineEdit _nameEdit, _editName, _editAddr, _pwEdit;
-    Label _srvStatus, _srvChar, _editTitle;
+    Label _srvStatus, _editTitle;
     Button _btnAdd, _btnEdit, _btnRemove, _btnRefresh, _btnBack;
     readonly List<SavedServer> _servers = new();
     readonly List<(Button row, Label info, Label motd)> _rows = new();
@@ -45,9 +45,6 @@ public partial class MainMenu
         _nameEdit.Text = GameData.LoadPlayerName();
         _nameEdit.TextChanged += t => GameData.SavePlayerName(t.StripEdges());
         top.AddChild(_nameEdit);
-        top.AddChild(new Control { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill });
-        _srvChar = Hud.MakeLabel("", 26, Gold, 6, HorizontalAlignment.Right);
-        top.AddChild(_srvChar);
 
         _srvStatus = Hud.MakeLabel("", 24, Gold, 6);
         col.AddChild(_srvStatus);
@@ -65,7 +62,7 @@ public partial class MainMenu
         _btnEdit = SrvButton(buttons, "EDIT", () => { if (_selected >= 0) OpenEdit(_selected); });
         _btnRemove = SrvButton(buttons, "REMOVE", RemoveSelected);
         _btnRefresh = SrvButton(buttons, "REFRESH", QueryAll);
-        _btnBack = SrvButton(buttons, "BACK", () => Go(Screen.Survivor));
+        _btnBack = SrvButton(buttons, "BACK", () => Go(Screen.Title));
 
         // add / edit dialog
         _editBox = Dialog(out var eb);
@@ -152,7 +149,6 @@ public partial class MainMenu
     {
         _joining = false;
         CloseDialogs();
-        _srvChar.Text = $"AS {GameData.Characters[_chars.Index].Name}";
         _servers.Clear();
         _servers.AddRange(GameData.LoadServers());
         if (!string.IsNullOrEmpty(GameData.NetMessage)) { ServerStatus(GameData.NetMessage, true); GameData.NetMessage = null; }
@@ -224,7 +220,7 @@ public partial class MainMenu
                 _infos[idx] = info;
                 if (err == null)
                 {
-                    string map = info.Map >= 0 && info.Map < MapBase.Names.Length ? MapBase.Names[info.Map] : "?";
+                    string map = info.Map < 0 ? "LOBBY" : info.Map < MapBase.Names.Length ? MapBase.Names[info.Map] : "?";
                     label.Text = $"{map}   {info.Players}/{info.MaxPlayers}{(info.Locked ? "   LOCKED" : "")}   {info.PingMs} MS";
                     label.LabelSettings.FontColor = info.Players >= info.MaxPlayers ? Dim : Mint;
                 }
@@ -254,11 +250,11 @@ public partial class MainMenu
         string name = _nameEdit.Text.StripEdges();
         if (name.Length == 0) { ServerStatus("ENTER YOUR NAME FIRST", true); _nameEdit.GrabFocus(); return; }
         GameData.SavePlayerName(name);
-        GameData.SelectedCharacter = _chars.Index;
         _joining = true;
         var s = _servers[idx];
         ServerStatus($"CONNECTING TO {(string.IsNullOrWhiteSpace(s.Name) ? s.Address : s.Name).ToUpper()}…", false);
-        JoinRequested?.Invoke(s.Address, name, _chars.Index, password);
+        // the survivor is picked in the lobby; this is just where our card starts
+        JoinRequested?.Invoke(s.Address, name, GameData.SelectedCharacter, password);
     }
 
     /// Status line under the name (connection errors land here).
@@ -304,12 +300,13 @@ public partial class MainMenu
         QueryAll();
     }
 
-    /// Esc / (B) on the browser: close a dialog, else back to survivor select.
+    /// Esc / (B) on the browser: close a dialog, else back to the title.
     void ServersBack()
     {
         if (_joining) return;
         if (DialogOpen) { CloseDialogs(); return; }
         Sfx.Play("ui_move");
-        Go(Screen.Survivor);
+        _online = false;
+        Go(Screen.Title);
     }
 }
