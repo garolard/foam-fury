@@ -1,8 +1,8 @@
-# Builds the dedicated server, pushes the Docker image to ghcr.io and (on a v* tag) publishes a GitHub release with
-# a ready-to-run zip (docker-compose.yaml + config) and the raw Linux binaries.
+# Builds the dedicated server and the Linux + Windows game clients, pushes the server's Docker image to ghcr.io and
+# (on a v* tag) publishes a GitHub release with the server zips (docker bundle + raw Linux binaries) and client zips.
 #   git tag v0.1.0 && git push origin v0.1.0      -> image :0.1.0 + :latest, release v0.1.0
-#   Actions tab -> "Server" -> Run workflow        -> image :<branch> + :sha-xxxxxxx, no release
-name: Server
+#   Actions tab -> "Release" -> Run workflow       -> image :<branch> + :sha-xxxxxxx, clients as run artifacts, no release
+name: Release
 
 on:
   push:
@@ -83,6 +83,28 @@ jobs:
           # Godot still writes the .pck when the C# build fails; without this folder the server cannot start
           test -f binaries/server/data_Prototype_linuxbsd_x86_64/Prototype.dll
 
+      - name: Export Linux and Windows clients
+        run: |
+          set -eu
+          godot=~/tools/godot/godot
+          mkdir -p binaries/linux binaries/windows
+          $godot --headless --path . --export-release "Linux" binaries/linux/foam-fury.x86_64
+          $godot --headless --path . --export-release "Windows Desktop" binaries/windows/foam-fury.exe
+          ls -la binaries/linux binaries/windows
+          # same as the server: a failed C# build still leaves a .pck behind
+          test -f binaries/linux/foam-fury.pck && test -f binaries/linux/data_Prototype_linuxbsd_x86_64/Prototype.dll
+          test -f binaries/windows/foam-fury.pck && test -f binaries/windows/data_Prototype_windows_x86_64/Prototype.dll
+
+      - name: Upload clients (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: foam-fury-clients-${{ github.sha }}
+          path: |
+            binaries/linux
+            binaries/windows
+          retention-days: 14
+
       - name: Image tags
         id: meta
         uses: docker/metadata-action@v5
@@ -127,6 +149,12 @@ jobs:
           b=dist/foam-fury-server-linux
           mkdir -p $b && cp -r binaries/server/. $b/ && cp server/server.cfg.example $b/server.cfg && cp server/SERVER.md $b/
           (cd dist && zip -qr foam-fury-server-${ver}-linux-x86_64.zip foam-fury-server-linux)
+          # game clients
+          for os in linux windows; do
+            c=dist/client-$os/foam-fury
+            mkdir -p $c && cp -r binaries/$os/. $c/
+            (cd dist/client-$os && zip -qr ../foam-fury-${ver}-$os-x86_64.zip foam-fury)
+          done
 
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/v')
@@ -134,4 +162,6 @@ jobs:
           files: |
             dist/foam-fury-server-*-docker.zip
             dist/foam-fury-server-*-linux-x86_64.zip
+            dist/foam-fury-[0-9]*-linux-x86_64.zip
+            dist/foam-fury-[0-9]*-windows-x86_64.zip
           generate_release_notes: true
