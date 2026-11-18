@@ -99,7 +99,7 @@ public partial class StatBar : Control
 /// Online: title -> server list -> shared lobby -> stage select (the host picks).
 public partial class MainMenu : CanvasLayer
 {
-    public enum Screen { Title, Survivor, Stage, Lobby, Servers }
+    public enum Screen { Title, Survivor, Stage, Lobby, Servers, Controls }
 
     /// (character, map) when the player starts a run. Co-op runs also fill GameData.Slots.
     public event Action<int, int> Finished;
@@ -110,7 +110,7 @@ public partial class MainMenu : CanvasLayer
     const float MiniScale = 0.055f;
 
     Screen _screen;
-    Control _root, _titleUi, _pickUi, _survInfo, _stageInfo, _shadeTitle, _shadePick;
+    Control _root, _titleUi, _controlsUi, _pickUi, _survInfo, _stageInfo, _shadeTitle, _shadePick;
     SubViewportContainer _showcase;
     Camera3D _cam;
     SpotLight3D _spot;
@@ -118,7 +118,8 @@ public partial class MainMenu : CanvasLayer
     Carousel _chars, _maps;
     readonly List<CharacterModel> _models = new();
     readonly List<MapBase> _minis = new();
-    Button _single, _multi, _onlineBtn;
+    Button _single, _multi, _onlineBtn, _controlsBtn, _quitBtn, _padTab, _keyboardTab;
+    GridContainer _padMapGrid, _keyboardMapGrid;
     Label _footer, _arrowL, _arrowR;
     readonly Label[] _crumbs = new Label[3];
     float _cool, _settle;
@@ -182,6 +183,7 @@ public partial class MainMenu : CanvasLayer
         _root.AddChild(_shadePick);
 
         BuildTitle();
+        BuildControls();
         BuildPicker();
         BuildLobby();
         BuildServers();
@@ -378,23 +380,25 @@ public partial class MainMenu : CanvasLayer
         bob.TweenProperty(logo, "scale", Vector2.One * 1.035f, 1.4f);
         bob.TweenProperty(logo, "scale", Vector2.One, 1.4f);
 
-        var col = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Begin };
-        col.AnchorLeft = 0.5f; col.AnchorRight = 0.5f; col.AnchorTop = 0.58f; col.AnchorBottom = 0.95f;
-        col.OffsetLeft = -260; col.OffsetRight = 260;
-        col.AddThemeConstantOverride("separation", 18);
+        var col = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+        col.AnchorLeft = 0.5f; col.AnchorRight = 0.5f; col.AnchorTop = 0.53f; col.AnchorBottom = 0.98f;
+        col.OffsetLeft = -250; col.OffsetRight = 250;
+        col.AddThemeConstantOverride("separation", 8);
         _titleUi.AddChild(col);
-        _single = Hud.MakeButton("SINGLE PLAYER", 36, new Vector2(480, 80));
-        _multi = Hud.MakeButton("LOCAL CO-OP", 36, new Vector2(480, 80));
-        _onlineBtn = Hud.MakeButton("ONLINE", 36, new Vector2(480, 80));
+        _single = Hud.MakeButton("SINGLE PLAYER", 30, new Vector2(460, 62));
+        _multi = Hud.MakeButton("LOCAL CO-OP", 30, new Vector2(460, 62));
+        _onlineBtn = Hud.MakeButton("ONLINE", 30, new Vector2(460, 62));
+        _controlsBtn = Hud.MakeButton("CONTROLS", 30, new Vector2(460, 62));
+        _quitBtn = Hud.MakeButton("QUIT GAME", 30, new Vector2(460, 62));
         var tag = Hud.MakeLabel("2-4", 18, Gold, 5);
         tag.SetAnchorsPreset(Control.LayoutPreset.CenterRight);
         tag.OffsetLeft = -64; tag.OffsetTop = -14; tag.Rotation = Mathf.DegToRad(-8);
         _multi.AddChild(tag);
-        foreach (var b in new[] { _single, _multi, _onlineBtn })
+        foreach (var b in new[] { _single, _multi, _onlineBtn, _controlsBtn, _quitBtn })
         {
             b.FocusEntered += () => { if (_screen == Screen.Title) Sfx.Play("ui_move", -6f); };
             b.MouseEntered += b.GrabFocus;
-            b.PivotOffset = new Vector2(240, 40);
+            b.PivotOffset = new Vector2(230, 31);
             col.AddChild(b);
         }
         _single.Pressed += () =>
@@ -423,17 +427,120 @@ public partial class MainMenu : CanvasLayer
             _online = false;
             Go(Screen.Lobby);
         };
+        _controlsBtn.Pressed += () =>
+        {
+            if (_cool > 0) return;
+            Sfx.Play("ui_select");
+            Go(Screen.Controls);
+        };
+        _quitBtn.Pressed += () =>
+        {
+            Sfx.Play("ui_select");
+            GetTree().Quit();
+        };
+    }
 
-        var help = new VBoxContainer();
-        _titleUi.AddChild(help);
-        help.AnchorLeft = 1; help.AnchorRight = 1; help.AnchorTop = 1; help.AnchorBottom = 1;
-        help.OffsetLeft = -520; help.OffsetRight = -44; help.OffsetTop = -300; help.OffsetBottom = -36;
-        help.Alignment = BoxContainer.AlignmentMode.End;
-        help.AddChild(Hud.MakeLabel("CONTROLS", 24, Gold, 8, HorizontalAlignment.Right));
-        foreach (var line in new[] {
-            "LS  move     RS  look", "RT  fire     LT  aim (snaps to target)", "A  jump     B  dash", "X  reload     Y  grenade",
-            "LB / RB  switch blaster     START  pause", "co-op: hold X near a downed friend to revive", "keyboard + mouse also supported" })
-            help.AddChild(Hud.MakeLabel(line, 18, new Color(0.9f, 0.9f, 0.95f), 6, HorizontalAlignment.Right));
+    // ---------------------------------------------------------------- controls
+    void BuildControls()
+    {
+        _controlsUi = new Control { MouseFilter = Control.MouseFilterEnum.Ignore };
+        _controlsUi.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        _root.AddChild(_controlsUi);
+
+        var panel = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop };
+        panel.AnchorLeft = 0.5f; panel.AnchorRight = 0.5f; panel.AnchorTop = 0.06f; panel.AnchorBottom = 0.94f;
+        panel.OffsetLeft = -590; panel.OffsetRight = 590;
+        panel.AddThemeStyleboxOverride("panel", Hud.Box(new Color(0.07f, 0.045f, 0.09f, 0.96f), 18, 3, new Color(0.52f, 0.38f, 0.62f)));
+        _controlsUi.AddChild(panel);
+
+        var content = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+        content.AddThemeConstantOverride("separation", 14);
+        panel.AddChild(content);
+
+        var heading = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+        content.AddChild(heading);
+        var title = Hud.MakeLabel("CONTROL MAP", 64, Gold, 12, HorizontalAlignment.Center);
+        title.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+        heading.AddChild(title);
+        var back = Hud.MakeButton("BACK", 24, new Vector2(160, 54));
+        back.Pressed += () => { Sfx.Play("ui_move"); Go(Screen.Title); };
+        heading.AddChild(back);
+
+        var tabs = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+        tabs.AddThemeConstantOverride("separation", 16);
+        content.AddChild(tabs);
+        _padTab = Hud.MakeButton("XBOX CONTROLLER", 24, new Vector2(330, 58));
+        _keyboardTab = Hud.MakeButton("KEYBOARD + MOUSE", 24, new Vector2(330, 58));
+        foreach (var tab in new[] { _padTab, _keyboardTab })
+        {
+            tab.ToggleMode = true;
+            tab.FocusEntered += () => Sfx.Play("ui_move", -6f);
+            tab.MouseEntered += tab.GrabFocus;
+            tabs.AddChild(tab);
+        }
+        _padTab.Pressed += () => { Sfx.Play("ui_select"); ShowControlMap(true); };
+        _keyboardTab.Pressed += () => { Sfx.Play("ui_select"); ShowControlMap(false); };
+
+        _padMapGrid = BuildControlMap(new (string input, string action)[]
+        {
+            ("LEFT STICK", "Move"), ("RIGHT STICK", "Look / aim"),
+            ("RT", "Fire"), ("LT", "Aim / lock on"),
+            ("A", "Jump"), ("B", "Dash"),
+            ("X", "Reload"), ("Y", "Throw grenade"),
+            ("LB / RB", "Switch weapon"), ("D-PAD", "Select grenade type"),
+            ("START", "Pause"), ("HOLD X", "Revive a teammate"),
+        });
+        content.AddChild(_padMapGrid);
+
+        _keyboardMapGrid = BuildControlMap(new (string input, string action)[]
+        {
+            ("W A S D / ARROWS", "Move"), ("MOUSE", "Look / aim"),
+            ("LEFT CLICK", "Fire"), ("RIGHT CLICK", "Aim / lock on"),
+            ("SPACE", "Jump"), ("SHIFT", "Dash"),
+            ("R", "Reload"), ("G", "Throw grenade"),
+            ("Q / E / WHEEL", "Switch weapon"), ("1–4", "Select grenade type"),
+            ("5", "Signature weapon"), ("ESC", "Pause"), ("HOLD R", "Revive a teammate"),
+        });
+        content.AddChild(_keyboardMapGrid);
+
+        content.AddChild(Hud.MakeLabel("MENU NAVIGATION:  W / S OR D-PAD  ·  ENTER / A SELECT  ·  ESC / B BACK", 18, Dim, 5, HorizontalAlignment.Center));
+        ShowControlMap(true);
+    }
+
+    GridContainer BuildControlMap((string input, string action)[] bindings)
+    {
+        var grid = new GridContainer { Columns = 2, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        grid.AddThemeConstantOverride("h_separation", 12);
+        grid.AddThemeConstantOverride("v_separation", 10);
+        foreach (var (input, action) in bindings)
+        {
+            var row = new PanelContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, CustomMinimumSize = new Vector2(0, 58) };
+            var style = Hud.Box(new Color(0.12f, 0.08f, 0.15f, 0.9f), 8, 1, new Color(0.28f, 0.22f, 0.32f));
+            style.ContentMarginLeft = style.ContentMarginRight = 12;
+            style.ContentMarginTop = style.ContentMarginBottom = 7;
+            row.AddThemeStyleboxOverride("panel", style);
+            var pair = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+            pair.AddThemeConstantOverride("separation", 8);
+            row.AddChild(pair);
+            var key = Hud.MakeLabel(input, 21, Gold, 5);
+            key.CustomMinimumSize = new Vector2(225, 0);
+            key.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+            pair.AddChild(key);
+            var value = Hud.MakeLabel(action, 21, Soft, 5, HorizontalAlignment.Right);
+            value.CustomMinimumSize = new Vector2(190, 0);
+            value.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
+            pair.AddChild(value);
+            grid.AddChild(row);
+        }
+        return grid;
+    }
+
+    void ShowControlMap(bool xbox)
+    {
+        _padTab.ButtonPressed = xbox;
+        _keyboardTab.ButtonPressed = !xbox;
+        _padMapGrid.Visible = xbox;
+        _keyboardMapGrid.Visible = !xbox;
     }
 
     // ------------------------------------------------------------------ co-op lobby
@@ -985,13 +1092,14 @@ public partial class MainMenu : CanvasLayer
     {
         _screen = s;
         _cool = 0.2f;
-        bool title = s == Screen.Title, lobby = s == Screen.Lobby, servers = s == Screen.Servers;
-        bool flat = lobby || servers; // full-screen panels, no 3D showcase
+        bool title = s == Screen.Title, controls = s == Screen.Controls, lobby = s == Screen.Lobby, servers = s == Screen.Servers;
+        bool flat = lobby || servers || controls; // full-screen panels, no 3D showcase
         Fade(_titleUi, title, instant);
+        Fade(_controlsUi, controls, instant);
         Fade(_shadeTitle, title || flat, instant);
-        Fade(_pickUi, !title, instant);
-        Fade(_shadePick, !title && !flat, instant);
-        Fade(_showcase, !title && !flat, instant);
+        Fade(_pickUi, !title && !controls, instant);
+        Fade(_shadePick, !title && !controls && !flat, instant);
+        Fade(_showcase, !title && !controls && !flat, instant);
         _serversUi.Visible = servers;
         _charSet.Visible = s == Screen.Survivor;
         _mapSet.Visible = s == Screen.Stage;
@@ -1007,6 +1115,7 @@ public partial class MainMenu : CanvasLayer
         for (int i = 0; i < 3; i++) _crumbs[i].LabelSettings.FontColor = i == step ? Gold : i < step ? Soft : Dim;
         _footer.Text = FooterText(s);
         if (title) _single.CallDeferred(Control.MethodName.GrabFocus);
+        else if (controls) _padTab.CallDeferred(Control.MethodName.GrabFocus);
         else if (lobby) { GetViewport().GuiReleaseFocus(); RefreshLobby(); }
         else if (servers) OpenServers();
         else { GetViewport().GuiReleaseFocus(); FrameCamera(s, instant); Refresh(0); }
@@ -1059,7 +1168,13 @@ public partial class MainMenu : CanvasLayer
             Go(Screen.Stage);
         }
         if (_screen == Screen.Servers && !_done && _cool <= 0 && Input.IsActionJustPressed("menu_back")) { ServersBack(); return; }
-        if (_done || _cool > 0 || _screen == Screen.Title || _screen == Screen.Lobby || _screen == Screen.Servers) return;
+        if (_screen == Screen.Controls && !_done && _cool <= 0 && Input.IsActionJustPressed("menu_back"))
+        {
+            Sfx.Play("ui_move");
+            Go(Screen.Title);
+            return;
+        }
+        if (_done || _cool > 0 || _screen == Screen.Title || _screen == Screen.Controls || _screen == Screen.Lobby || _screen == Screen.Servers) return;
         if (_screen == Screen.Stage && (_coop || NetLobby)) return; // per-device, see _Input
 
         var car = _screen == Screen.Survivor ? _chars : _maps;
