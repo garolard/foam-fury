@@ -10,6 +10,7 @@ public partial class Player : CharacterBody3D
     public WeaponDef[] Weapons;
     public int[] Mag, Reserve;
     public int Grenades;
+    public int GrenadeType;
     public float ReloadProgress = -1f; // -1 not reloading, else 0..1
     public float Spread;               // current spread in degrees
     public bool AimingAtEnemy;
@@ -430,7 +431,7 @@ public partial class Player : CharacterBody3D
         // ----- weapons -----
         if (In.JustPressed("weapon_next")) CycleWeapon(1);
         if (In.JustPressed("weapon_prev")) CycleWeapon(-1);
-        for (int i = 0; i < Weapons.Length; i++) if (In.JustPressed($"weapon_{i + 1}")) EquipWeapon(i);
+        for (int i = 0; i < 4; i++) if (In.JustPressed($"grenade_type_{i + 1}")) { GrenadeType = i; _hud?.GrenadeSelected(); }
 
         if (In.JustPressed("reload")) StartReload();
         if (ReloadProgress >= 0)
@@ -694,8 +695,8 @@ public partial class Player : CharacterBody3D
         var dir = -_rig.Camera.GlobalBasis.Z;
         var pos = GlobalPosition + Vector3.Up * 1.6f + new Vector3(dir.X, 0, dir.Z).Normalized() * 0.6f;
         var vel = dir * 15f + Vector3.Up * 4.5f + new Vector3(Velocity.X, 0, Velocity.Z) * 0.5f;
-        if (Net.IsClient) Net.Game?.SendGrenade(pos, vel); // the server throws the real one
-        else Grenade.Throw(pos, vel, Def.BlastMult, this);
+        if (Net.IsClient) Net.Game?.SendGrenade(pos, vel, GrenadeType); // the server throws the real one
+        else Grenade.Throw(pos, vel, Def.BlastMult, this, GrenadeType);
         Sfx.Play("throw");
         _throwT = 0f;
         _lastShot = 0.3f;

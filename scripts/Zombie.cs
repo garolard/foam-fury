@@ -332,6 +332,8 @@ public partial class Zombie : CharacterBody3D
         _slowT = Mathf.Max(_slowT, time);
     }
 
+    public void AddGravityPull(Vector3 impulse) => _knock += impulse;
+
     /// Set on fire: `dps` damage per second for `time` seconds (refreshes, keeps the hotter flame).
     public void Ignite(float dps, float time, Player source = null)
     {
