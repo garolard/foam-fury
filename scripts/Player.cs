@@ -10,6 +10,7 @@ public partial class Player : CharacterBody3D
     public WeaponDef[] Weapons;
     public int[] Mag, Reserve;
     public int Grenades;
+    public int GrenadeType;
     public float ReloadProgress = -1f; // -1 not reloading, else 0..1
     public float Spread;               // current spread in degrees
     public bool AimingAtEnemy;
@@ -44,6 +45,7 @@ public partial class Player : CharacterBody3D
 
     public float FacingYaw => _yaw;
     public bool AimHeld => NetRole == Role.Local ? In.Pressed("aim") : (_netFlags & FlagAim) != 0;
+    public bool BulletTimeActive => !Net.Online && NetRole == Role.Local && !Dead && !Downed && !Benched && _dashTime > 0 && In != null && In.Pressed("aim");
     /// Holding the revive button (reload) next to a downed teammate.
     public bool ReviveHeld => NetRole == Role.Local ? In.Pressed("reload") : (_netFlags & FlagRevive) != 0;
     /// What this player's input/state looks like on the wire.
@@ -73,10 +75,12 @@ public partial class Player : CharacterBody3D
     float _dashTime, _dashCd, _bloom, _snapT = -1f;
     float _kick, _hurtFlinch, _throwT = -1f, _dashBuffer;
     const float DashCooldown = 0.6f;
+    const float DashDuration = 0.28f;
+    const float AfterimageInterval = 0.04f;
     Vector3 _dashDir, _knock;
     float _snapYaw0, _snapPitch0, _snapYaw1, _snapPitch1;
     bool _wasAim;
-    float _flameSfx;
+    float _flameSfx, _afterimageTimer;
 
     public WeaponDef Weapon => Weapons[WeaponIndex];
 
@@ -340,6 +344,7 @@ public partial class Player : CharacterBody3D
         if (Downed) { DownedProcess(dt); return; }
         _lastShot += dt; _fireCd -= dt; _invuln -= dt; _sinceHurt += dt; _dashCd -= dt;
         bool aiming = In.Pressed("aim");
+        float aimDt = BulletTimeActive ? dt / (float)Engine.TimeScale : dt;
         _rig.Aiming = aiming;
 
         // ----- camera look (stick) -----
@@ -348,13 +353,13 @@ public partial class Player : CharacterBody3D
         UpdateAimTarget();
         float friction = (UsingPad && AimingAtEnemy) ? 0.45f : 1f;
         float aimMul = aiming ? 0.5f : 1f;
-        _rig.Yaw -= look.X * 3.6f * aimMul * friction * dt;
-        _rig.Pitch -= look.Y * 2.4f * aimMul * friction * dt;
+        _rig.Yaw -= look.X * 3.6f * aimMul * friction * aimDt;
+        _rig.Pitch -= look.Y * 2.4f * aimMul * friction * aimDt;
         if (aiming && !_wasAim && UsingPad) TryAimSnap();
         _wasAim = aiming;
         if (_snapT >= 0)
         {
-            _snapT += dt / 0.12f;
+            _snapT += aimDt / 0.12f;
             float t = Mathf.SmoothStep(0, 1, Mathf.Min(1, _snapT));
             _rig.Yaw = Mathf.LerpAngle(_snapYaw0, _snapYaw1, t);
             _rig.Pitch = Mathf.Lerp(_snapPitch0, _snapPitch1, t);
@@ -378,7 +383,7 @@ public partial class Player : CharacterBody3D
             _rig.FovKick = 1f;
             In.Rumble(0.35f, 0.1f, 0.12f);
             _dashDir = move.LengthSquared() > 0.01f ? move.Normalized() : -camBasis.Z;
-            _dashTime = 0.22f * Def.DashMult;
+            _dashTime = DashDuration * Def.DashMult;
             _dashCd = DashCooldown;
             _invuln = Mathf.Max(_invuln, 0.3f);
             Sfx.Play("dash", -2f);
@@ -414,7 +419,7 @@ public partial class Player : CharacterBody3D
         float targetYaw = _yaw;
         if (combat) targetYaw = _rig.Yaw + Mathf.Pi;
         else if (move.LengthSquared() > 0.01f) targetYaw = Mathf.Atan2(move.X, move.Z);
-        _yaw = Mathf.LerpAngle(_yaw, targetYaw, Mathf.Min(1, dt * (combat ? 20f : 12f)));
+        _yaw = Mathf.LerpAngle(_yaw, targetYaw, Mathf.Min(1, aimDt * (combat ? 20f : 12f)));
         Model.Rotation = new Vector3(0, _yaw, 0);
 
         // ----- animation -----
@@ -426,7 +431,7 @@ public partial class Player : CharacterBody3D
         // ----- weapons -----
         if (In.JustPressed("weapon_next")) CycleWeapon(1);
         if (In.JustPressed("weapon_prev")) CycleWeapon(-1);
-        for (int i = 0; i < Weapons.Length; i++) if (In.JustPressed($"weapon_{i + 1}")) EquipWeapon(i);
+        for (int i = 0; i < 4; i++) if (In.JustPressed($"grenade_type_{i + 1}")) { GrenadeType = i; _hud?.GrenadeSelected(); }
 
         if (In.JustPressed("reload")) StartReload();
         if (ReloadProgress >= 0)
@@ -462,6 +467,17 @@ public partial class Player : CharacterBody3D
     {
         float dt = (float)delta;
         if (Dead || Downed || Benched || Net.IsServer) return; // the death/downed animation owns the pose now
+        if (BulletTimeActive)
+        {
+            _afterimageTimer -= dt;
+            if (_afterimageTimer <= 0)
+            {
+                Fx.Afterimage(Model);
+                _afterimageTimer = AfterimageInterval;
+            }
+        }
+        else _afterimageTimer = 0f;
+
         bool armsUp = AimHeld || _lastShot < 0.8f || ReloadProgress >= 0;
         _armBlend = Mathf.MoveToward(_armBlend, armsUp ? 1f : 0f, dt * 8f);
         float blend = Mathf.SmoothStep(0, 1, _armBlend);
@@ -679,8 +695,8 @@ public partial class Player : CharacterBody3D
         var dir = -_rig.Camera.GlobalBasis.Z;
         var pos = GlobalPosition + Vector3.Up * 1.6f + new Vector3(dir.X, 0, dir.Z).Normalized() * 0.6f;
         var vel = dir * 15f + Vector3.Up * 4.5f + new Vector3(Velocity.X, 0, Velocity.Z) * 0.5f;
-        if (Net.IsClient) Net.Game?.SendGrenade(pos, vel); // the server throws the real one
-        else Grenade.Throw(pos, vel, Def.BlastMult, this);
+        if (Net.IsClient) Net.Game?.SendGrenade(pos, vel, GrenadeType); // the server throws the real one
+        else Grenade.Throw(pos, vel, Def.BlastMult, this, GrenadeType);
         Sfx.Play("throw");
         _throwT = 0f;
         _lastShot = 0.3f;

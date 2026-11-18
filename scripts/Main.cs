@@ -3,6 +3,7 @@ using System.Collections.Generic;
 
 public partial class Main : Node3D
 {
+    const float BulletTimeScale = 0.2f;
     public static Main Instance;
     public static Font TitleFont;
 
@@ -42,6 +43,7 @@ public partial class Main : Node3D
     AudioStreamPlayer _music;
     float _menuT;
     readonly List<double> _shotTimes = new();
+    bool _debugNade;
     string _debugShotPath;
     int _shotIdx;
     bool _auto;
@@ -435,6 +437,7 @@ public partial class Main : Node3D
         if (Mode == State.Playing)
         {
             Mode = State.Paused;
+            Engine.TimeScale = 1f;
             GetTree().Paused = true;
             Input.MouseMode = Input.MouseModeEnum.Visible;
             _pausePanel = MakePanel("PAUSED", $"WAVE {WaveNumber}     SCORE {Score:N0}",
@@ -556,6 +559,15 @@ public partial class Main : Node3D
         }
         if (_auto && Mode == State.Playing) AutoPlay();
         if (OS.GetEnvironment("FF_ANIMTEST") == "1" && Mode == State.Playing) AnimTest();
+        // FF_GRENADE=type (+ FF_GRENADE_T=seconds): pick that grenade (shows the picker) and drop one ahead of the player
+        if (!_debugNade && _time > (OS.GetEnvironment("FF_GRENADE_T") is { Length: > 0 } fgt ? float.Parse(fgt, System.Globalization.CultureInfo.InvariantCulture) : 2.5f) && Mode == State.Playing && Player != null && OS.GetEnvironment("FF_GRENADE") is { Length: > 0 } fg && int.TryParse(fg, out int gt))
+        {
+            _debugNade = true;
+            Player.GrenadeType = gt;
+            Player.Hud?.GrenadeSelected();
+            var fwd = -Player.Rig.GlobalBasis.Z with { Y = 0 };
+            Grenade.Throw(Player.GlobalPosition + fwd.Normalized() * 8f + fwd.Normalized().Cross(Vector3.Up) * 3f + Vector3.Up * 1.5f, Vector3.Zero, 1f, Player, gt);
+        }
 
         if (Net.IsServer) { if (!ServerProcess(dt)) return; }
         else
@@ -565,6 +577,7 @@ public partial class Main : Node3D
             if (Input.IsActionJustPressed("pause") && (Mode == State.Playing || Mode == State.Paused)) { TogglePause(); return; }
             if (Mode == State.Paused && Input.IsActionJustPressed("menu_back")) { TogglePause(); return; }
             if (Mode != State.Playing) return;
+            if (!Net.Online) Engine.TimeScale = Players.Exists(p => p.BulletTimeActive) ? BulletTimeScale : 1f;
 
             if (Input.MouseMode != Input.MouseModeEnum.Captured && Input.IsMouseButtonPressed(MouseButton.Left) && Players.Exists(p => p.In is { Kbm: true }))
                 Input.MouseMode = Input.MouseModeEnum.Captured;
