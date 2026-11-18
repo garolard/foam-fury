@@ -169,4 +169,33 @@ public static class Fx
     {
         Burst(pos + Vector3.Up * 0.1f, new Color(0.45f, 0.33f, 0.22f), 18, 5f, 0.22f, 0.9f, Vector3.Up, 50f, 10f);
     }
+
+    public static void Afterimage(CharacterModel model)
+    {
+        if (Net.IsServer || model == null || Main.Instance == null || Main.Instance.World == null) return;
+        var image = (Node3D)model.Duplicate();
+        image.ProcessMode = Node.ProcessModeEnum.Disabled;
+        var meshes = Assets.FindMeshes(image);
+        if (meshes.Count == 0) { image.Free(); return; }
+
+        var material = new StandardMaterial3D
+        {
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            AlbedoColor = new Color(0.35f, 0.8f, 1f),
+            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+        };
+        foreach (var mesh in meshes)
+        {
+            mesh.MaterialOverride = material;
+            mesh.Transparency = 0.35f;
+            mesh.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
+        }
+
+        var world = Main.Instance.World;
+        world.AddChild(image);
+        image.GlobalTransform = model.GlobalTransform;
+        var tween = world.CreateTween().SetParallel();
+        foreach (var mesh in meshes) tween.TweenProperty(mesh, "transparency", 1f, 0.18f);
+        tween.Chain().TweenCallback(Callable.From(image.QueueFree));
+    }
 }

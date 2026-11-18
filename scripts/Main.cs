@@ -3,6 +3,7 @@ using System.Collections.Generic;
 
 public partial class Main : Node3D
 {
+    const float BulletTimeScale = 0.2f;
     public static Main Instance;
     public static Font TitleFont;
 
@@ -436,6 +437,7 @@ public partial class Main : Node3D
         if (Mode == State.Playing)
         {
             Mode = State.Paused;
+            Engine.TimeScale = 1f;
             GetTree().Paused = true;
             Input.MouseMode = Input.MouseModeEnum.Visible;
             _pausePanel = MakePanel("PAUSED", $"WAVE {WaveNumber}     SCORE {Score:N0}",
@@ -575,6 +577,7 @@ public partial class Main : Node3D
             if (Input.IsActionJustPressed("pause") && (Mode == State.Playing || Mode == State.Paused)) { TogglePause(); return; }
             if (Mode == State.Paused && Input.IsActionJustPressed("menu_back")) { TogglePause(); return; }
             if (Mode != State.Playing) return;
+            if (!Net.Online) Engine.TimeScale = Players.Exists(p => p.BulletTimeActive) ? BulletTimeScale : 1f;
 
             if (Input.MouseMode != Input.MouseModeEnum.Captured && Input.IsMouseButtonPressed(MouseButton.Left) && Players.Exists(p => p.In is { Kbm: true }))
                 Input.MouseMode = Input.MouseModeEnum.Captured;
