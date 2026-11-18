@@ -42,6 +42,7 @@ public partial class Main : Node3D
     AudioStreamPlayer _music;
     float _menuT;
     readonly List<double> _shotTimes = new();
+    bool _debugNade;
     string _debugShotPath;
     int _shotIdx;
     bool _auto;
@@ -556,6 +557,15 @@ public partial class Main : Node3D
         }
         if (_auto && Mode == State.Playing) AutoPlay();
         if (OS.GetEnvironment("FF_ANIMTEST") == "1" && Mode == State.Playing) AnimTest();
+        // FF_GRENADE=type (+ FF_GRENADE_T=seconds): pick that grenade (shows the picker) and drop one ahead of the player
+        if (!_debugNade && _time > (OS.GetEnvironment("FF_GRENADE_T") is { Length: > 0 } fgt ? float.Parse(fgt, System.Globalization.CultureInfo.InvariantCulture) : 2.5f) && Mode == State.Playing && Player != null && OS.GetEnvironment("FF_GRENADE") is { Length: > 0 } fg && int.TryParse(fg, out int gt))
+        {
+            _debugNade = true;
+            Player.GrenadeType = gt;
+            Player.Hud?.GrenadeSelected();
+            var fwd = -Player.Rig.GlobalBasis.Z with { Y = 0 };
+            Grenade.Throw(Player.GlobalPosition + fwd.Normalized() * 8f + fwd.Normalized().Cross(Vector3.Up) * 3f + Vector3.Up * 1.5f, Vector3.Zero, 1f, Player, gt);
+        }
 
         if (Net.IsServer) { if (!ServerProcess(dt)) return; }
         else

@@ -158,9 +158,9 @@ public partial class NetGame
             }
             case Msg.Grenade:
             {
-                var pos = r.V(); var vel = r.V();
+                var pos = r.V(); var vel = r.V(); int type = Mathf.Clamp(r.I(), 0, 3);
                 if (!p.Targetable || pos.DistanceTo(p.GlobalPosition) > 8f || vel.Length() > 45f) break;
-                Grenade.Throw(pos, vel, p.Def.BlastMult, p);
+                Grenade.Throw(pos, vel, p.Def.BlastMult, p, type);
                 break;
             }
             case Msg.TakePickup:
@@ -294,10 +294,10 @@ public partial class NetGame
     public void SendPickupSpawned(Pickup p, Vector3 vel) { var w = new NetWriter(Msg.PickupSpawned); PickupFull(w, p, vel); Broadcast(w); }
     public void SendPickupGone(Pickup p) => Broadcast(new NetWriter(Msg.PickupGone).I(p.NetId));
 
-    public void SendGrenadeSpawned(Grenade g, Vector3 vel, Vector3 spin) =>
-        Broadcast(new NetWriter(Msg.GrenadeSpawned).I(g.NetId).V(g.GlobalPosition).V(vel).V(spin));
-    public void SendGrenadeExploded(Grenade g, float radius) =>
-        Broadcast(new NetWriter(Msg.GrenadeExploded).I(g.NetId).V(g.GlobalPosition).F(radius));
+    public void SendGrenadeSpawned(Grenade g, Vector3 vel, Vector3 spin, int type) =>
+        Broadcast(new NetWriter(Msg.GrenadeSpawned).I(g.NetId).V(g.GlobalPosition).V(vel).V(spin).I(type));
+    public void SendGrenadeExploded(Grenade g, float radius, int type) =>
+        Broadcast(new NetWriter(Msg.GrenadeExploded).I(g.NetId).V(g.GlobalPosition).F(radius).I(type));
 
     public void SendPuddleSpawned(MudPuddle p) { var w = new NetWriter(Msg.PuddleSpawned); PuddleFull(w, p); Broadcast(w); }
     public void SendPuddleGrew(MudPuddle p) => Broadcast(new NetWriter(Msg.PuddleGrew).I(p.NetId).F(p.Radius));

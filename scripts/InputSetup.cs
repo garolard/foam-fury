@@ -31,10 +31,10 @@ public static class InputSetup
         new("grenade", 0.5f, Button: JoyButton.Y, Keys: new[] { Key.G }),
         new("weapon_next", 0.5f, Button: JoyButton.RightShoulder, Keys: new[] { Key.E }, Mouse: new[] { MouseButton.WheelDown }),
         new("weapon_prev", 0.5f, Button: JoyButton.LeftShoulder, Keys: new[] { Key.Q }, Mouse: new[] { MouseButton.WheelUp }),
-        new("weapon_1", 0.5f, Button: JoyButton.DpadLeft, Keys: new[] { Key.Key1 }),
-        new("weapon_2", 0.5f, Button: JoyButton.DpadUp, Keys: new[] { Key.Key2 }),
-        new("weapon_3", 0.5f, Button: JoyButton.DpadRight, Keys: new[] { Key.Key3 }),
-        new("weapon_4", 0.5f, Button: JoyButton.DpadDown, Keys: new[] { Key.Key4 }),
+        new("grenade_type_1", 0.5f, Button: JoyButton.DpadLeft, Keys: new[] { Key.Key1 }),
+        new("grenade_type_2", 0.5f, Button: JoyButton.DpadUp, Keys: new[] { Key.Key2 }),
+        new("grenade_type_3", 0.5f, Button: JoyButton.DpadRight, Keys: new[] { Key.Key3 }),
+        new("grenade_type_4", 0.5f, Button: JoyButton.DpadDown, Keys: new[] { Key.Key4 }),
         // signature weapon slot (pad reaches it with LB/RB cycling; the d-pad is full)
         new("weapon_5", 0.5f, Keys: new[] { Key.Key5 }),
     };

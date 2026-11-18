@@ -48,12 +48,13 @@ public partial class Hud : CanvasLayer
     Player _player;
     Crosshair _cross;
     ProgressBar _hp;
-    Label _hpText, _ammo, _reserve, _weaponName, _grenades, _wave, _left, _score, _combo, _banner, _bannerSub, _hint;
+    Label _hpText, _ammo, _reserve, _weaponName, _grenades, _grenadeType, _wave, _left, _score, _combo, _banner, _bannerSub, _hint;
     TextureRect _weaponIcon;
     ColorRect _vignette;
     ShaderMaterial _vigMat;
     VBoxContainer _toasts;
     Control _dash;
+    GrenadeSelector _grenadeWheel, _grenadeMini;
     float _hurt, _lowPulse;
     Tween _bannerTween;
     // split-screen: the HUD is laid out on a larger virtual canvas and scaled down into the player's view
@@ -113,6 +114,10 @@ void fragment() {
         _cross.SetAnchorsPreset(Control.LayoutPreset.FullRect);
         root.AddChild(_cross);
 
+        _grenadeWheel = new GrenadeSelector { Player = p, MouseFilter = Control.MouseFilterEnum.Ignore };
+        _grenadeWheel.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        root.AddChild(_grenadeWheel);
+
         // ---- bottom-left: name + health ----
         var bl = new VBoxContainer();
         bl.SetAnchorsPreset(Control.LayoutPreset.BottomLeft);
@@ -163,8 +168,17 @@ void fragment() {
         _reserve.VerticalAlignment = VerticalAlignment.Bottom;
         _reserve.SizeFlagsVertical = Control.SizeFlags.ShrinkEnd;
         arow.AddChild(_ammo); arow.AddChild(_reserve);
-        _grenades = MakeLabel("", 20, new Color(0.5f, 1f, 0.5f), 6, HorizontalAlignment.Right);
-        br.AddChild(_grenades);
+        var grow = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
+        grow.AddThemeConstantOverride("separation", 10);
+        br.AddChild(grow);
+        var gcol = new VBoxContainer { Alignment = BoxContainer.AlignmentMode.Center };
+        gcol.AddThemeConstantOverride("separation", -4);
+        grow.AddChild(gcol);
+        _grenadeType = MakeLabel("", 20, null, 6, HorizontalAlignment.Right);
+        _grenades = MakeLabel("", 16, new Color(0.85f, 0.85f, 0.9f), 5, HorizontalAlignment.Right);
+        gcol.AddChild(_grenadeType); gcol.AddChild(_grenades);
+        _grenadeMini = new GrenadeSelector { Player = p, Mini = true, CustomMinimumSize = new Vector2(64, 64), MouseFilter = Control.MouseFilterEnum.Ignore };
+        grow.AddChild(_grenadeMini);
 
         // ---- top center: wave ----
         var tc = new VBoxContainer();
@@ -216,6 +230,7 @@ void fragment() {
         _downBox.Visible = false;
 
         WeaponChanged();
+        GrenadeTypeChanged();
     }
 
     void FitRoot()
@@ -250,6 +265,21 @@ void fragment() {
         var w = _player.Weapon;
         _weaponName.Text = w.Name.ToUpper();
         _weaponIcon.Texture = ResourceLoader.Exists(w.IconPath) ? GD.Load<Texture2D>(w.IconPath) : null;
+    }
+
+    public void GrenadeTypeChanged()
+    {
+        if (_player == null || _grenadeType == null) return;
+        int t = Mathf.Clamp(_player.GrenadeType, 0, GrenadeTypes.Names.Length - 1);
+        _grenadeType.Text = GrenadeTypes.Names[t];
+        _grenadeType.LabelSettings.FontColor = GrenadeTypes.Colors[t].Lightened(0.15f);
+    }
+
+    /// The player just picked a grenade type: flash the d-pad picker around the crosshair.
+    public void GrenadeSelected()
+    {
+        GrenadeTypeChanged();
+        _grenadeWheel?.Open();
     }
 
     public void HitMarker(bool head, bool kill)
@@ -305,7 +335,9 @@ void fragment() {
         _ammo.Text = _player.Mag[i].ToString();
         _ammo.LabelSettings.FontColor = _player.Mag[i] <= Mathf.Max(1, _player.Weapon.MagSize / 4) ? new Color(1f, 0.4f, 0.3f) : Colors.White;
         _reserve.Text = _player.Reserve[i] < 0 ? " / ∞" : $" / {_player.Reserve[i]}";
-        _grenades.Text = $"GRENADES  {_player.Grenades}";
+        _grenades.Text = $"GRENADES x{_player.Grenades}";
+        _grenades.LabelSettings.FontColor = _player.Grenades > 0 ? new Color(0.85f, 0.85f, 0.9f) : new Color(1f, 0.4f, 0.3f);
+        GrenadeTypeChanged();
         _dash.QueueRedraw();
 
         _wave.Text = m.WaveNumber > 0 ? $"WAVE {m.WaveNumber}" : "GET READY";
