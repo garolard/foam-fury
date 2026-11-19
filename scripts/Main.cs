@@ -60,6 +60,7 @@ public partial class Main : Node3D
             GetTree().Root.CallDeferred(Node.MethodName.AddChild, Net.Game);
         }
         if (Net.WantsServer) { ServerReady(); return; }
+        Platform.ApplyDisplay();
         InputSetup.Init();
         TitleFont ??= new SystemFont { FontNames = new[] { "Impact", "Arial Black", "Helvetica Neue", "Arial" }, FontWeight = 800 };
         Fx.ClearDarts();
