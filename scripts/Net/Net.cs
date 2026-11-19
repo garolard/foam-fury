@@ -74,12 +74,12 @@ public enum Msg : byte
 {
     // client -> server
     State = 1, Fired, Hit, Slow, MudLanded, Grenade, TakePickup, Ready,
-    LobbyPick, LobbyConfirm, LobbyHover, LobbyChooseMap, BackToLobby,
+    LobbyPick, LobbyConfirm, LobbyHover, LobbyChooseMap, BackToLobby, Pinata,
     // server -> client
     Welcome = 20, Snapshot, PlayerJoined, PlayerLeft, PlayerSpawned, PlayerHurt, PlayerDowned, PlayerDied, PlayerRevived,
     ZombieSpawned, ZombieHit, ZombieDied, PickupSpawned, PickupTaken, PickupGone, GrenadeSpawned, GrenadeExploded,
     PuddleSpawned, PuddleGrew, PuddleIgnited, PuddleRemoved, Banner, Toast, Score, Sound, RunStart, RunOver, FiredRelay,
-    Lobby, Enter, ToLobby,
+    Lobby, Enter, ToLobby, PinataSpawned, PinataExploded,
 }
 
 /// Packs a message into bytes.

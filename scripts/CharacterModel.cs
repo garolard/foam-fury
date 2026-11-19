@@ -1,6 +1,6 @@
 using Godot;
 
-public enum DeathKind { FallBack, Crumple, Launch }
+public enum DeathKind { FallBack, Crumple, Launch, Pinata }
 
 /// Wraps the Kenney animated character: applies a skin, wires idle/run/jump animations,
 /// procedural pose layer, hand attachment, hit-flash and procedural death animations.

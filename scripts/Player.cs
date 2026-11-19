@@ -277,7 +277,8 @@ public partial class Player : CharacterBody3D
         var wd = Weapons[w];
         _lastShot = 0;
         _armBlend = Mathf.Max(_armBlend, 0.7f);
-        foreach (var d in dirs)
+        if (wd.Kind == FireKind.Confetti) ConfettiShot.Fire(muzzle, dirs, wd, 1f, 1f, GetRid(), this, true);
+        else foreach (var d in dirs)
         {
             switch (wd.Kind)
             {
@@ -725,18 +726,22 @@ public partial class Player : CharacterBody3D
         // if aim point is behind the muzzle (very close geometry) use camera dir
         if (baseDir.Dot(-_rig.Camera.GlobalBasis.Z) < 0.3f) baseDir = -_rig.Camera.GlobalBasis.Z;
         var sent = Net.IsClient ? new System.Collections.Generic.List<Vector3>(w.Pellets) : null;
+        var confetti = w.Kind == FireKind.Confetti ? new System.Collections.Generic.List<Vector3>(w.Pellets) : null;
         for (int i = 0; i < w.Pellets; i++)
         {
-            var dir = ApplySpread(baseDir, Spread);
+            var dir = ApplySpread(baseDir, w.Kind == FireKind.Confetti ? w.Spread : Spread);
             sent?.Add(dir);
             switch (w.Kind)
             {
+                // one blast object for all the bits, so only its first zombie becomes a piñata
+                case FireKind.Confetti: confetti.Add(dir); break;
                 case FireKind.Mud: MudGlob.Fire(muzzle, dir, w, Def.DamageMult, GetRid(), this); break;
                 // online the server burns things; our own stream is just for show
                 case FireKind.Flame: FlameJet.Fire(muzzle, dir, Velocity, w, Def.DamageMult, this, Net.IsClient); break;
                 default: Projectile.Fire(muzzle, dir, w, Def.DamageMult, GetRid(), this); break;
             }
         }
+        if (confetti != null) ConfettiShot.Fire(muzzle, confetti, w, Def.DamageMult, Def.BlastMult, GetRid(), this);
         if (sent != null) Net.Game?.SendFired(WeaponIndex, muzzle, sent);
         if (w.Kind == FireKind.Flame)
         {

@@ -148,6 +148,15 @@ public partial class NetGame
                 if (z != null && !z.Dead && p.Targetable) z.Slow(mul, t);
                 break;
             }
+            case Msg.Pinata:
+            {
+                // only a Fiesta Popper owner, near the zombie, can turn it into a piñata
+                var z = NetIds.Get<Zombie>(r.I());
+                if (z == null || !p.Targetable || p.Def.Signature?.Kind != FireKind.Confetti || !Pinata.CanConvert(z)) break;
+                if (z.GlobalPosition.DistanceTo(p.GlobalPosition) > 25f) break;
+                z.Pinatafy(p, p.Def.BlastMult);
+                break;
+            }
             case Msg.MudLanded:
             {
                 var pos = r.V();
@@ -298,6 +307,10 @@ public partial class NetGame
         Broadcast(new NetWriter(Msg.GrenadeSpawned).I(g.NetId).V(g.GlobalPosition).V(vel).V(spin).I(type));
     public void SendGrenadeExploded(Grenade g, float radius, int type) =>
         Broadcast(new NetWriter(Msg.GrenadeExploded).I(g.NetId).V(g.GlobalPosition).F(radius).I(type));
+
+    public void SendPinataSpawned(Pinata p) =>
+        Broadcast(new NetWriter(Msg.PinataSpawned).I(p.NetId).V(p.GlobalPosition).F(p.Yaw).F(p.Size).F(p.Radius));
+    public void SendPinataExploded(Pinata p) => Broadcast(new NetWriter(Msg.PinataExploded).I(p.NetId).V(p.GlobalPosition).F(p.Radius));
 
     public void SendPuddleSpawned(MudPuddle p) { var w = new NetWriter(Msg.PuddleSpawned); PuddleFull(w, p); Broadcast(w); }
     public void SendPuddleGrew(MudPuddle p) => Broadcast(new NetWriter(Msg.PuddleGrew).I(p.NetId).F(p.Radius));

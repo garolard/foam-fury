@@ -4,7 +4,7 @@
 extends SceneTree
 
 const DIR := "res://assets/custom-weapons/"
-const MODELS := ["blaster-mug", "blaster-flame", "blaster-mariachi"]
+const MODELS := ["blaster-mug", "blaster-flame", "blaster-mariachi", "blaster-confetti"]
 const SIZE := 512
 
 func _initialize() -> void:

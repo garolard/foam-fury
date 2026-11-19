@@ -1,7 +1,7 @@
 using Godot;
 using System.Collections.Generic;
 
-public enum FireKind { Dart, Mud, Flame }
+public enum FireKind { Dart, Mud, Flame, Confetti }
 
 public class WeaponDef
 {
@@ -90,6 +90,16 @@ public static class GameData
         HeatTime = 3f, CoolTime = 3.5f, FireSong = "jarabe-tapatio.mp3", ShotDb = -11f,
     };
 
+    /// JO: a giant party popper. Short confetti cone; the first zombie it hits becomes a donkey Pinata that
+    /// lures the horde and then bursts (bigger with JO's blast perk).
+    public static readonly WeaponDef FiestaPopper = new()
+    {
+        Name = "Fiesta Popper", Model = "blaster-confetti", Pack = "custom-weapons", Icon = CustomDir + "Previews/blaster-confetti.png",
+        Kind = FireKind.Confetti, Blurb = "Turns a zombie into a piñata. The horde swarms it... then it bursts in a deadly confetti cloud!",
+        Sound = "shot_confetti", Damage = 5, FireRate = 0.8f, ReloadTime = 1.8f, Spread = 10f, Recoil = 3f, MagSize = 4, Pellets = 12,
+        StartReserve = 12, MaxReserve = 24, AmmoPickup = 4, Tracer = new Color(1f, 0.45f, 0.9f), ProjectileSpeed = 30f, Scale = 0.8f,
+    };
+
     public static readonly CharacterDef[] Characters =
     {
         new CharacterDef { Name = "REX", Title = "The Bruiser", Perk = "+25% blaster damage", Skin = ProtagDir + "Skins/criminalMaleA.png",
@@ -101,7 +111,7 @@ public static class GameData
         new CharacterDef { Name = "MIA", Title = "Quick Hands", Perk = "Reloads 45% faster", Skin = ProtagDir + "Skins/skaterFemaleA.png",
             Speed = 6.6f, ReloadMult = 0.55f },
         new CharacterDef { Name = "JO", Title = "Demolitions", Perk = "+3 grenades, bigger blasts", Skin = SurvivorDir + "Skins/survivorFemaleA.png",
-            MaxHp = 110, Grenades = 6, BlastMult = 1.4f },
+            MaxHp = 110, Grenades = 6, BlastMult = 1.4f, Signature = FiestaPopper },
         new CharacterDef { Name = "SAM", Title = "The Scavenger", Perk = "Zombies drop loot twice as often", Skin = SurvivorDir + "Skins/survivorMaleB.png",
             MaxHp = 110, DropMult = 2f },
     };

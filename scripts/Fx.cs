@@ -75,6 +75,17 @@ public static class Fx
         AutoFree(p, life + 0.5);
     }
 
+    /// Fiesta palette (matches the Fiesta Popper and the donkey pinata).
+    public static readonly Color[] FiestaColors =
+    {
+        new(0.95f, 0.47f, 0.94f), new(1f, 0.75f, 0.27f), new(0.38f, 0.8f, 0.55f), new(1f, 0.58f, 0.18f),
+        new(0.66f, 0.47f, 0.91f), new(0.4f, 0.58f, 0.85f), new(1f, 1f, 1f),
+    };
+    /// Paper confetti: chips, curly streamers and glitter in every fiesta colour that burst out, tumble,
+    /// then sway and spiral down slowly (see ConfettiField).
+    public static void Confetti(Vector3 pos, int count, float speed, float life = 1.6f, Vector3? dir = null, float spread = 180f, float size = 1f, float gravity = 3f)
+        => ConfettiField.Emit(pos, count, speed, life, dir ?? Vector3.Up, spread, size, gravity);
+
     public static void Flash(Vector3 pos, Color color, float energy = 3f, float range = 5f, float time = 0.06f)
     {
         if (Net.IsServer) return; // headless server: effects are drawn by the clients
@@ -173,7 +184,8 @@ public static class Fx
     public static void Afterimage(CharacterModel model)
     {
         if (Net.IsServer || model == null || Main.Instance == null || Main.Instance.World == null) return;
-        var image = (Node3D)model.Duplicate();
+        // a ghost needs only the posed meshes: skip scripts (CharacterModel has no parameterless constructor to clone with)
+        var image = (Node3D)model.Duplicate((int)Node.DuplicateFlags.Groups);
         image.ProcessMode = Node.ProcessModeEnum.Disabled;
         var meshes = Assets.FindMeshes(image);
         if (meshes.Count == 0) { image.Free(); return; }

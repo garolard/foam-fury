@@ -24,6 +24,10 @@ public partial class Zombie : CharacterBody3D
     // co-op: the player this zombie is chasing (nearest one on their feet, re-picked periodically)
     Player _target;
     float _retarget;
+    // a nearby piñata beats any player: chase it and whack it
+    Pinata _decoy;
+    float _decoyScan;
+    bool _pinata;
     OmniLight3D _burnLight;
 
     // ----- online -----
@@ -60,7 +64,13 @@ public partial class Zombie : CharacterBody3D
         _interp.Push(t, pos, yaw);
         _netBurning = (flags & 1) != 0;
         _windup = windup > 0 ? (1f - (windup - 1) / 254f) * 0.45f : -1f;
-        if (strikes != (Strikes & 255)) { Strikes = strikes; _hitArmKick = 1f; }
+        if (strikes != (Strikes & 255))
+        {
+            Strikes = strikes; _hitArmKick = 1f;
+            // swung at a piñata? show the whack (the server owns its fuse)
+            var p = Pinata.Nearest(pos, 2.8f);
+            p?.Whack((p.GlobalPosition - pos).Normalized());
+        }
     }
 
     public override void _EnterTree() => NetIds.Add(NetId, this);
@@ -183,15 +193,27 @@ public partial class Zombie : CharacterBody3D
             if (t != _target) { _target = t; _repath = 0; }
         }
         var player = _target;
+        _decoyScan -= dt;
+        if (_decoy != null && (!IsInstanceValid(_decoy) || !_decoy.Alive)) { _decoy = null; _decoyScan = 0; }
+        if (_decoyScan <= 0 && _windup < 0)
+        {
+            _decoyScan = 0.3f;
+            var d = Pinata.Nearest(GlobalPosition, Pinata.LureRadius);
+            if (d != _decoy) { _decoy = d; _repath = 0; }
+        }
+        bool lured = _decoy != null;
+        // the goal is the piñata if one is near, else the player we're chasing
+        Vector3 goal = lured ? _decoy.GlobalPosition : player?.GlobalPosition ?? GlobalPosition;
 
         Vector3 desired = Vector3.Zero;
-        bool playerAlive = player != null && player.Targetable;
+        bool playerAlive = lured || (player != null && player.Targetable);
         var flatToPlayer = Vector3.Zero;
         float distToPlayer = 999f;
         if (playerAlive)
         {
-            flatToPlayer = player.GlobalPosition - GlobalPosition; flatToPlayer.Y = 0;
+            flatToPlayer = goal - GlobalPosition; flatToPlayer.Y = 0;
             distToPlayer = flatToPlayer.Length();
+            if (lured) distToPlayer -= 0.45f * _decoy.Size; // it's a fat donkey
         }
 
         if (playerAlive && _windup < 0)
@@ -200,9 +222,9 @@ public partial class Zombie : CharacterBody3D
             if (_repath <= 0)
             {
                 _repath = 0.3f;
-                _agent.TargetPosition = player.GlobalPosition;
+                _agent.TargetPosition = goal;
             }
-            Vector3 target = player.GlobalPosition;
+            Vector3 target = goal;
             if (distToPlayer > 3.5f && !_agent.IsNavigationFinished())
             {
                 var next = _agent.GetNextPathPosition();
@@ -242,7 +264,10 @@ public partial class Zombie : CharacterBody3D
                 Strikes++;
                 float reach = 0.7f + 0.62f * _scale + 1.0f;
                 if (playerAlive && distToPlayer < reach)
-                    player.TakeDamage(_damage, flatToPlayer.Normalized(), Type == ZombieType.Brute ? 12f : 5f);
+                {
+                    if (lured) _decoy.Whack(flatToPlayer.Normalized());
+                    else player.TakeDamage(_damage, flatToPlayer.Normalized(), Type == ZombieType.Brute ? 12f : 5f);
+                }
             }
         }
 
@@ -333,6 +358,23 @@ public partial class Zombie : CharacterBody3D
     }
 
     public void AddGravityPull(Vector3 impulse) => _knock += impulse;
+
+    /// Fiesta Popper: this zombie becomes a donkey piñata (counts as a kill for `source`).
+    /// A client's own blast asks the server, which does the swap and tells everyone.
+    public void Pinatafy(Player source, float blastMult)
+    {
+        if (Dead || _rise > 0) return;
+        if (Replica)
+        {
+            if (source is { NetRole: Player.Role.Local }) Net.Game?.SendPinata(this);
+            return;
+        }
+        Pinata.Spawn(GlobalPosition, _yaw, Type == ZombieType.Runner ? 1.2f : 1.55f, source, blastMult);
+        _pinata = true;
+        _lastExplosive = false;
+        if (source != null) _lastSource = source;
+        Die(Vector3.Forward, false);
+    }
 
     /// Set on fire: `dps` damage per second for `time` seconds (refreshes, keeps the hotter flame).
     public void Ignite(float dps, float time, Player source = null)
@@ -441,7 +483,7 @@ public partial class Zombie : CharacterBody3D
     {
         if (Dead) return;
         // procedural death: explosions launch, headshots crumple, everything else gets knocked flat
-        var kind = _lastExplosive ? DeathKind.Launch : headshot ? DeathKind.Crumple : GD.Randf() < 0.25f ? DeathKind.Crumple : DeathKind.FallBack;
+        var kind = _pinata ? DeathKind.Pinata : _lastExplosive ? DeathKind.Launch : headshot ? DeathKind.Crumple : GD.Randf() < 0.25f ? DeathKind.Crumple : DeathKind.FallBack;
         if (Net.IsServer) Net.Game?.SendZombieDied(this, dir, headshot, kind, _lastSource);
         Dead = true;
         CollisionLayer = 0;
@@ -469,6 +511,15 @@ public partial class Zombie : CharacterBody3D
 
     void DeathVisuals(DeathKind kind, Vector3 dir)
     {
+        if (kind == DeathKind.Pinata)
+        {
+            // poof: the zombie is gone and the piñata (spawned separately) stands in its place
+            Fx.Confetti(GlobalPosition + Vector3.Up * Height * 0.5f, 50, 6f, 1.4f, Vector3.Up, 90f);
+            Fx.Burst(GlobalPosition + Vector3.Up * Height * 0.5f, new Color(1f, 1f, 1f, 0.8f), 14, 4f, 0.3f, 0.5f, Vector3.Up, 90f, 2f);
+            _model.Visible = false;
+            QueueFree();
+            return;
+        }
         Sfx.Play3D("zombie_die", GlobalPosition, -1f, 0.15f, Type == ZombieType.Brute ? 0.6f : Type == ZombieType.Runner ? 1.4f : 1f);
         Fx.Burst(GlobalPosition + Vector3.Up * Height * 0.5f, new Color(0.4f, 0.07f, 0.05f), 18, 7f, 0.14f, 0.8f);
         float power = Type == ZombieType.Brute ? 0.5f : Type == ZombieType.Runner ? 1.4f : 1f;

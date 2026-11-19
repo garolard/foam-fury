@@ -43,7 +43,7 @@ public partial class Main : Node3D
     AudioStreamPlayer _music;
     float _menuT;
     readonly List<double> _shotTimes = new();
-    bool _debugNade;
+    bool _debugNade, _debugPinata;
     string _debugShotPath;
     int _shotIdx;
     bool _auto;
@@ -567,6 +567,35 @@ public partial class Main : Node3D
             Player.Hud?.GrenadeSelected();
             var fwd = -Player.Rig.GlobalBasis.Z with { Y = 0 };
             Grenade.Throw(Player.GlobalPosition + fwd.Normalized() * 8f + fwd.Normalized().Cross(Vector3.Up) * 3f + Vector3.Up * 1.5f, Vector3.Zero, 1f, Player, gt);
+        }
+
+        // FF_PINATA=seconds: ring a few walkers 7 m ahead of the player and turn one of them into a piñata
+        if (!_debugPinata && Mode == State.Playing && Player != null && OS.GetEnvironment("FF_PINATA") is { Length: > 0 } fp
+            && _time > float.Parse(fp, System.Globalization.CultureInfo.InvariantCulture))
+        {
+            _debugPinata = true;
+            var fwd = (-Player.Rig.GlobalBasis.Z with { Y = 0 }).Normalized();
+            var c = Player.GlobalPosition + fwd * 5f - fwd.Cross(Vector3.Up) * 7f; // ahead and to the left, clear of the arena centrepiece
+            Zombie first = null;
+            for (int i = 0; i < 7; i++)
+            {
+                var z = new Zombie();
+                z.Setup(i == 6 ? ZombieType.Runner : ZombieType.Walker, 1, false);
+                World.AddChild(z);
+                float a = Mathf.Tau * i / 7f;
+                z.GlobalPosition = c + new Vector3(Mathf.Cos(a), 0, Mathf.Sin(a)) * (i == 0 ? 0f : 6f) + Vector3.Up * 0.05f;
+                Zombies.Add(z);
+                first ??= z;
+            }
+            first.Pinatafy(Player, Player.Def.BlastMult);
+            if (OS.GetEnvironment("FF_PCAM") == "1")
+            {
+                var cam = new Camera3D { Fov = 55 };
+                World.AddChild(cam);
+                cam.GlobalPosition = c + fwd.Cross(Vector3.Up) * 4.5f + Vector3.Up * 2.6f - fwd * 2.5f;
+                cam.LookAt(c + Vector3.Up * 0.8f, Vector3.Up);
+                cam.MakeCurrent();
+            }
         }
 
         if (Net.IsServer) { if (!ServerProcess(dt)) return; }
