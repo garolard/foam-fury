@@ -35,6 +35,13 @@ public partial class Crosshair : Control
             foreach (var d in new[] { new Vector2(1, 1), new Vector2(-1, 1), new Vector2(1, -1), new Vector2(-1, -1) })
                 DrawLine(c + d * s, c + d * (s + 8f), hc, Kill > 0 ? 3.5f : 2.5f);
         }
+        if (Player.Weapon.UsesHeat && Player.CurrentHeat > 0.01f)
+        {
+            float h = Player.CurrentHeat;
+            var hc = Player.CurrentOverheated ? new Color(1f, 0.2f, 0.15f) : new Color(1f, 0.85f, 0.3f).Lerp(new Color(1f, 0.25f, 0.1f), h);
+            DrawArc(c, 26f, 0, Mathf.Tau, 48, new Color(0, 0, 0, 0.4f), 5f);
+            DrawArc(c, 26f, -Mathf.Pi / 2, -Mathf.Pi / 2 + Mathf.Tau * h, 48, hc, 4f);
+        }
         if (Player.ReloadProgress >= 0)
         {
             DrawArc(c, 26f, 0, Mathf.Tau, 48, new Color(0, 0, 0, 0.4f), 5f);
@@ -332,9 +339,19 @@ void fragment() {
         _hp.Value = _player.Hp / _player.MaxHp;
         _hpText.Text = $"{Mathf.CeilToInt(_player.Hp)} / {_player.MaxHp}";
         int i = _player.WeaponIndex;
-        _ammo.Text = _player.Mag[i].ToString();
-        _ammo.LabelSettings.FontColor = _player.Mag[i] <= Mathf.Max(1, _player.Weapon.MagSize / 4) ? new Color(1f, 0.4f, 0.3f) : Colors.White;
-        _reserve.Text = _player.Reserve[i] < 0 ? " / ∞" : $" / {_player.Reserve[i]}";
+        if (_player.Weapon.UsesHeat)
+        {
+            float h = _player.Heat[i];
+            _ammo.Text = $"{h * 100:0}%";
+            _ammo.LabelSettings.FontColor = _player.Overheated[i] ? new Color(1f, 0.25f, 0.2f) : Colors.White.Lerp(new Color(1f, 0.45f, 0.2f), h);
+            _reserve.Text = " HEAT";
+        }
+        else
+        {
+            _ammo.Text = _player.Mag[i].ToString();
+            _ammo.LabelSettings.FontColor = _player.Mag[i] <= Mathf.Max(1, _player.Weapon.MagSize / 4) ? new Color(1f, 0.4f, 0.3f) : Colors.White;
+            _reserve.Text = _player.Reserve[i] < 0 ? " / ∞" : $" / {_player.Reserve[i]}";
+        }
         _grenades.Text = $"GRENADES x{_player.Grenades}";
         _grenades.LabelSettings.FontColor = _player.Grenades > 0 ? new Color(0.85f, 0.85f, 0.9f) : new Color(1f, 0.4f, 0.3f);
         GrenadeTypeChanged();
@@ -350,7 +367,8 @@ void fragment() {
             if (m.ComboMult > 1) Pop(_combo);
         }
 
-        if (_player.ReloadProgress >= 0) _hint.Text = "RELOADING";
+        if (_player.Weapon.UsesHeat) _hint.Text = _player.Overheated[i] ? "OVERHEATED — COOLING DOWN" : "";
+        else if (_player.ReloadProgress >= 0) _hint.Text = "RELOADING";
         else if (_player.Mag[i] == 0 && _player.Reserve[i] == 0) _hint.Text = "OUT OF AMMO — SWITCH WEAPON (LB/RB)";
         else if (_player.Mag[i] <= _player.Weapon.MagSize / 4) _hint.Text = "RELOAD (X)";
         else _hint.Text = "";

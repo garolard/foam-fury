@@ -12,6 +12,11 @@ public partial class Player : CharacterBody3D
     public int Grenades;
     public int GrenadeType;
     public float ReloadProgress = -1f; // -1 not reloading, else 0..1
+    /// Heat weapons: 0..1 per weapon slot; overheated slots are locked until they cool to 0.
+    public float[] Heat;
+    public bool[] Overheated;
+    public float CurrentHeat => Heat[WeaponIndex];
+    public bool CurrentOverheated => Overheated[WeaponIndex];
     public float Spread;               // current spread in degrees
     public bool AimingAtEnemy;
     public float DashReady = 1f;
@@ -81,6 +86,9 @@ public partial class Player : CharacterBody3D
     float _snapYaw0, _snapPitch0, _snapYaw1, _snapPitch1;
     bool _wasAim;
     float _flameSfx, _afterimageTimer;
+    AudioStreamPlayer _song;
+    /// A touch above the music (-11 dB) and above the Mariachi-gun's own shots, which are turned down so the song carries.
+    const float SongDb = -8f, SongMuteDb = -50f;
 
     public WeaponDef Weapon => Weapons[WeaponIndex];
 
@@ -114,6 +122,8 @@ public partial class Player : CharacterBody3D
         Weapons = Def.Signature != null ? [.. GameData.Weapons, Def.Signature] : GameData.Weapons;
         Mag = new int[Weapons.Length];
         Reserve = new int[Weapons.Length];
+        Heat = new float[Weapons.Length];
+        Overheated = new bool[Weapons.Length];
         for (int i = 0; i < Weapons.Length; i++)
         {
             Mag[i] = Weapons[i].MagSize;
@@ -284,7 +294,7 @@ public partial class Player : CharacterBody3D
         else
         {
             Fx.MuzzleFlash(muzzle, dirs[0], wd.Tracer);
-            Sfx.Play3D(wd.Sound, muzzle, wd.Pellets > 1 ? 0f : -3f, 0.06f);
+            Sfx.Play3D(wd.Sound, muzzle, wd.ShotDb ?? (wd.Pellets > 1 ? 0f : -3f), 0.06f);
         }
     }
 
@@ -334,6 +344,7 @@ public partial class Player : CharacterBody3D
         float dt = (float)delta;
         if (NetRole == Role.Remote) { RemoteProcess(dt); return; }
         if (Benched) { BenchedProcess(dt); return; }
+        if (Dead || Downed) _song?.Stop();
         if (Dead)
         {
             var v = Velocity; v.X = Mathf.MoveToward(v.X, 0, dt * 20); v.Z = Mathf.MoveToward(v.Z, 0, dt * 20);
@@ -433,6 +444,8 @@ public partial class Player : CharacterBody3D
         if (In.JustPressed("weapon_prev")) CycleWeapon(-1);
         for (int i = 0; i < 4; i++) if (In.JustPressed($"grenade_type_{i + 1}")) { GrenadeType = i; _hud?.GrenadeSelected(); }
 
+        UpdateHeat(dt);
+        UpdateSong(dt);
         if (In.JustPressed("reload")) StartReload();
         if (ReloadProgress >= 0)
         {
@@ -442,7 +455,11 @@ public partial class Player : CharacterBody3D
         }
 
         bool trigger = Weapon.Auto ? In.Pressed("fire") : In.JustPressed("fire");
-        if (trigger && _fireCd <= 0 && ReloadProgress < 0)
+        if (Weapon.UsesHeat && Overheated[WeaponIndex])
+        {
+            if (In.JustPressed("fire")) Sfx.Play("empty");
+        }
+        else if (trigger && _fireCd <= 0 && ReloadProgress < 0)
         {
             if (Mag[WeaponIndex] > 0) Shoot();
             else if (In.JustPressed("fire"))
@@ -610,9 +627,59 @@ public partial class Player : CharacterBody3D
         }
     }
 
+    /// Heat weapons cool on their own (even holstered); a short pause after the last shot before passive cooling kicks in.
+    void UpdateHeat(float dt)
+    {
+        for (int i = 0; i < Weapons.Length; i++)
+        {
+            var w = Weapons[i];
+            if (!w.UsesHeat) continue;
+            if (Overheated[i])
+            {
+                Heat[i] -= dt / w.CoolTime;
+                if (i == WeaponIndex && GD.Randf() < 0.35f)
+                    Fx.Burst(MuzzlePos, new Color(0.85f, 0.85f, 0.9f, 0.7f), 1, 1.5f, 0.1f, 0.5f, Vector3.Up, 30f, -2f);
+                if (Heat[i] <= 0)
+                {
+                    Heat[i] = 0;
+                    Overheated[i] = false;
+                    if (i == WeaponIndex) Sfx.Play("reload", -4f);
+                }
+            }
+            else if (i != WeaponIndex || _lastShot > 0.25f)
+                Heat[i] = Mathf.Max(0, Heat[i] - dt / w.CoolTime);
+        }
+    }
+
+    /// Fade the weapon's song out shortly after the trigger is released (or it overheats / is holstered).
+    void UpdateSong(float dt)
+    {
+        if (_song == null || !_song.Playing) return;
+        bool firing = Weapon.FireSong != null && _lastShot < 0.12f && !Overheated[WeaponIndex];
+        if (firing) return;
+        _song.VolumeDb = Mathf.MoveToward(_song.VolumeDb, SongMuteDb, 250f * dt);
+        if (_song.VolumeDb <= SongMuteDb) _song.Stop();
+    }
+
+    /// Start the weapon's song at a random point (10 s in from either end); keep it going while firing.
+    void PlaySong(WeaponDef w)
+    {
+        if (Net.IsServer) return;
+        var stream = GD.Load<AudioStream>($"res://audio/{w.FireSong}");
+        if (stream == null) return;
+        if (_song == null) { _song = new AudioStreamPlayer { Bus = "Master" }; AddChild(_song); }
+        if (_song.Stream != stream) { _song.Stop(); _song.Stream = stream; }
+        _song.VolumeDb = SongDb;
+        if (_song.Playing) return;
+        float len = (float)stream.GetLength();
+        float from = len > 20f ? (float)GD.RandRange(10.0, len - 10.0) : 0f;
+        _song.Play(from);
+    }
+
     bool StartReload()
     {
         var w = Weapon;
+        if (w.UsesHeat) return false;
         if (ReloadProgress >= 0 || Mag[WeaponIndex] >= w.MagSize || Reserve[WeaponIndex] == 0) return false;
         _reloadTimer = w.ReloadTime * Def.ReloadMult;
         ReloadProgress = 0;
@@ -633,7 +700,20 @@ public partial class Player : CharacterBody3D
     void Shoot()
     {
         var w = Weapon;
-        Mag[WeaponIndex]--;
+        if (w.UsesHeat)
+        {
+            // full heat after HeatTime seconds of continuous fire, then locked for CoolTime
+            Heat[WeaponIndex] += w.FireRate / w.HeatTime;
+            if (Heat[WeaponIndex] >= 1f)
+            {
+                Heat[WeaponIndex] = 1f;
+                Overheated[WeaponIndex] = true;
+                Sfx.Play("empty");
+                In.Rumble(0.5f, 0.3f, 0.25f);
+            }
+        }
+        else Mag[WeaponIndex]--;
+        if (w.FireSong != null && !Overheated[WeaponIndex]) PlaySong(w);
         _fireCd = w.FireRate;
         _lastShot = 0;
         // make sure arms are up so the muzzle points where we aim
@@ -668,7 +748,7 @@ public partial class Player : CharacterBody3D
         else
         {
             Fx.MuzzleFlash(muzzle, baseDir, w.Tracer);
-            Sfx.Play(w.Sound, w.Pellets > 1 ? 0f : -3f, 0.06f);
+            Sfx.Play(w.Sound, w.ShotDb ?? (w.Pellets > 1 ? 0f : -3f), 0.06f);
         }
         _rig.Recoil += Mathf.DegToRad(w.Recoil);
         _rig.AddTrauma(w.Pellets > 1 ? 0.25f : w.Recoil * 0.04f);

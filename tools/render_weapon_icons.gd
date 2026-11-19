@@ -4,7 +4,7 @@
 extends SceneTree
 
 const DIR := "res://assets/custom-weapons/"
-const MODELS := ["blaster-mug", "blaster-flame"]
+const MODELS := ["blaster-mug", "blaster-flame", "blaster-mariachi"]
 const SIZE := 512
 
 func _initialize() -> void:
@@ -37,7 +37,11 @@ func _run() -> void:
 	cam.projection = Camera3D.PROJECTION_ORTHOGONAL
 	vp.add_child(cam)
 
-	for name in MODELS:
+	# optional: render only the named models, e.g. `... --script tools/render_weapon_icons.gd -- blaster-mariachi`
+	var models: Array = OS.get_cmdline_user_args()
+	if models.is_empty():
+		models = MODELS
+	for name in models:
 		var model: Node3D = load(DIR + "Models/GLB format/%s.glb" % name).instantiate()
 		vp.add_child(model)
 		var aabb := _aabb(model)
