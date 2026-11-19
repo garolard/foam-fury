@@ -20,6 +20,15 @@ public class WeaponDef
     public bool Auto;
     public Color Tracer;
     public float ProjectileSpeed = 75f;
+    /// Heat weapons have no ammo: seconds of continuous fire until overheating (0 = normal magazine weapon).
+    public float HeatTime;
+    /// Seconds an overheated weapon is locked while it cools back down.
+    public float CoolTime;
+    public bool UsesHeat => HeatTime > 0;
+    /// Track (res://audio, full file name) that plays while this weapon is firing, from a random point.
+    public string FireSong;
+    /// Shot volume override (default: 0 dB for shotguns, -3 dB otherwise).
+    public float? ShotDb;
 
     public string IconPath => Icon ?? GameData.Kit + $"Previews/{Model}.png";
 }
@@ -71,6 +80,16 @@ public static class GameData
         StartReserve = 200, MaxReserve = 400, AmmoPickup = 100, Auto = true, Tracer = new Color(1f, 0.5f, 0.1f), ProjectileSpeed = 17f, Scale = 0.75f,
     };
 
+    /// KAI: a minigun hidden in a mariachi guitar case. Fastest fire rate in the game, but it overheats.
+    public static readonly WeaponDef MariachiGun = new()
+    {
+        Name = "Mariachi-gun", Model = "blaster-mariachi", Pack = "custom-weapons", Icon = CustomDir + "Previews/blaster-mariachi.png",
+        Blurb = "Guitar-case minigun. Fastest fire in the game, but overheats after 3s of shooting.",
+        Sound = "shot_smg", Damage = 10, FireRate = 0.04f, ReloadTime = 0f, Spread = 3.5f, Recoil = 0.4f, MagSize = 1,
+        StartReserve = -1, MaxReserve = -1, Auto = true, Tracer = new Color(1f, 0.3f, 0.45f), ProjectileSpeed = 85f, Scale = 0.85f,
+        HeatTime = 3f, CoolTime = 3.5f, FireSong = "jarabe-tapatio.mp3", ShotDb = -11f,
+    };
+
     public static readonly CharacterDef[] Characters =
     {
         new CharacterDef { Name = "REX", Title = "The Bruiser", Perk = "+25% blaster damage", Skin = ProtagDir + "Skins/criminalMaleA.png",
@@ -78,7 +97,7 @@ public static class GameData
         new CharacterDef { Name = "NOVA", Title = "The Cyborg", Perk = "+60% max health", Skin = ProtagDir + "Skins/cyborgFemaleA.png",
             MaxHp = 160, Speed = 5.8f, Signature = Flamethrower },
         new CharacterDef { Name = "KAI", Title = "The Skater", Perk = "+20% speed, longer dash", Skin = ProtagDir + "Skins/skaterMaleA.png",
-            Speed = 7.4f, DashMult = 1.4f },
+            Speed = 7.4f, DashMult = 1.4f, Signature = MariachiGun },
         new CharacterDef { Name = "MIA", Title = "Quick Hands", Perk = "Reloads 45% faster", Skin = ProtagDir + "Skins/skaterFemaleA.png",
             Speed = 6.6f, ReloadMult = 0.55f },
         new CharacterDef { Name = "JO", Title = "Demolitions", Perk = "+3 grenades, bigger blasts", Skin = SurvivorDir + "Skins/survivorFemaleA.png",
